@@ -1,0 +1,16 @@
+﻿### Program Notes for RoR2 Modding
+
+Important Networking Classes (RoR2.Networking)
+NetworkUser - Full representation of a connected client. Contains references to the selected survivor, their camera, etc.
+
+Important UI Classes (RoR2.UI)
+HUD - Representation of the INGAME hud, with health bars, exp points, difficulty, etc.
+
+RoR2 Camera System
+- A CameraRigController component controls the viewpoint of a single survivor, with a view of their Survivor, HUD, crosshair, and everything else.
+- Each NetworkUser has a direct reference to their own CameraRigController.
+- On every Update call, the local CameraRigControllers for every player are updated to reflect their position and state through the RunCameraManager.
+    - The RunCameraManager updates the positions, and the changes are reflected in the GameObjects via the CameraRigControllers themselves.
+    - The CameraRigControllers update the Camera's position and rotation based on a TARGET (usually a character), a MODE, and input from the player through the Rewired input system (
+
+
