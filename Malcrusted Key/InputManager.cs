@@ -53,5 +53,7 @@ public static class InputManager
     public static ButtonState Slot7;
     public static ButtonState ToggleAffixCommon;
     public static ButtonState ToggleAffixRare;
+    public static ButtonState NextTarget;
+    public static ButtonState PrevTarget;
 }
 

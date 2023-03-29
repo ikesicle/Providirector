@@ -101,4 +101,16 @@ public class CameraModeDirector : CameraModePlayerBasic
         // Rudimentary implement but it'll work for now
         base.CollectLookInputInternal(rawInstanceData, context, out output);
     }
+
+    public override void ApplyLookInputInternal(object rawInstanceData, in CameraModeContext context, in ApplyLookInputArgs input)
+    {
+        InstanceData instanceData = (InstanceData)rawInstanceData;
+        ref readonly TargetInfo targetInfo = ref context.targetInfo;
+        float minPitch = instanceData.minPitch;
+        float maxPitch = instanceData.maxPitch;
+        instanceData.pitchYaw.pitch = Mathf.Clamp(instanceData.pitchYaw.pitch - input.lookInput.y, minPitch, maxPitch);
+        instanceData.pitchYaw.yaw += input.lookInput.x;
+        if ((bool)targetInfo.networkedViewAngles && targetInfo.networkedViewAngles.hasEffectiveAuthority && targetInfo.networkUser)
+            targetInfo.networkedViewAngles.viewAngles = instanceData.pitchYaw;
+    }
 }

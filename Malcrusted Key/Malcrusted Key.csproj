@@ -4,10 +4,12 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <LangVersion>preview</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <BaseOutputPath></BaseOutputPath>
+    <PackageOutputPath>$(OutputPath)</PackageOutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <OutputPath>..\..\..\Downloads\RoR2 Mods\Providirector</OutputPath>
+    <OutputPath>C:\Users\chenh\AppData\Roaming\r2modmanPlus-local\RiskOfRain2\profiles\Default\BepInEx\plugins\Providirector</OutputPath>
     <AssemblyName>Providirector</AssemblyName>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
@@ -23,5 +25,15 @@
       <NoWarn>NU1701</NoWarn>
     </PackageReference>
     <PackageReference Include="R2API" Version="4.3.5" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="ScriptsAssembly">
+      <HintPath>ScriptsAssembly.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="providirectorui">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>
