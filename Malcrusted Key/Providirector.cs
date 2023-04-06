@@ -36,11 +36,8 @@ namespace DacityP
     public class Providirector : BaseUnityPlugin
     {
         private static bool modenabled = true;
-        private PlayerCharacterMasterController dirpcontroller = null;
-        private CharacterMaster dirpmaster = null;
+        private static bool runIsActive = false;
         private NetworkUser dirpnuser = null;
-        private CharacterBody dirpbody = null;
-        private KinematicCharacterMotor dirpkinemotor = null;
         private GameObject spectatetarget = null;
         private CameraRigController maincam = null;
         private Vector3 viewingOverride = Vector3.zero;
@@ -58,12 +55,9 @@ namespace DacityP
             RoR2.Run.onRunStartGlobal += Run_onRunStartGlobal;
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
-            RoR2.CameraRigController.onCameraTargetChanged += CameraRigController_onCameraTargetChanged;
-            On.RoR2.Run.OnServerCharacterBodySpawned += Run_OnServerCharacterBodySpawned;
-            On.RoR2.InteractionDriver.FixedUpdate += InteractionDriver_FixedUpdate;
-            On.RoR2.InteractionDriver.FindBestInteractableObject += InteractionDriver_FindBestInteractableObject;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
             On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
+            On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
             R2API.Utils.CommandHelper.AddToConsoleWhenReady();
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
@@ -72,9 +66,20 @@ namespace DacityP
             
         }
 
+        private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
+        {
+            if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
+            NetworkUser localuser = dirpnuser ? dirpnuser : LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
+            if (localuser == null) { Debug.Log("Local user does not have an associated network user!"); return; }
+            if (user != localuser) orig(self, user);
+            else Debug.Log("Player creation was stopped by Providirector.");
+        }
+
         private void RoR2Application_onUpdate()
         {
-            if (!dirpmaster) return;
+            if (!runIsActive) return;
+            if (dirpnuser == null) return;
+
             InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
             InputManager.Slot1.PushState(Input.GetKey(KeyCode.Q));
             InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
@@ -85,8 +90,8 @@ namespace DacityP
             InputManager.Slot7.PushState(Input.GetKey(KeyCode.Alpha7));
             InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
             InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
-            InputManager.NextTarget.PushState(dirpnuser.inputPlayer.GetButton(RewiredConsts.Action.PrimarySkill));
-            InputManager.PrevTarget.PushState(dirpnuser.inputPlayer.GetButton(RewiredConsts.Action.SecondarySkill));
+            InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
+            InputManager.PrevTarget.PushState(Input.GetKey(KeyCode.Mouse1));
             Vector3 pos = Vector3.zero;
             Quaternion rot = Quaternion.identity;
             if (dirpnuser && dirpnuser.cameraRigController)
@@ -118,29 +123,23 @@ namespace DacityP
 
         private void Run_onRunStartGlobal(Run instance)
         {
-            if (PlayerCharacterMasterController.instances.Count > 0 && modenabled)
+            if (modenabled)
             {
-                dirpcontroller = PlayerCharacterMasterController.instances[0];
-                dirpmaster = dirpcontroller.master;
-                dirpmaster.bodyPrefab = BodyCatalog.FindBodyPrefab("WispBody");
-                dirpmaster.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
-                dirpmaster.teamIndex = TeamIndex.Neutral;
-                dirpnuser = dirpcontroller.networkUser;
+                runIsActive = true;
                 Run.ambientLevelCap = 1500;
                 Debug.Log("Providirector has been set up for this run!");
+                if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
+                dirpnuser = LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
             }
         }
 
         private void Run_onRunDestroyGlobal(Run obj)
         {
-            dirpcontroller = null;
-            dirpmaster = null;
             dirpnuser = null;
-            dirpbody = null;
-            dirpkinemotor = null;
             Run.ambientLevelCap = 99;
             if (activehud) Destroy(activehud);
             activehud = null;
+            runIsActive = false;
         }
 
         private void Run_OnServerSceneChanged(On.RoR2.Run.orig_OnServerSceneChanged orig, Run self, string sceneName)
@@ -194,18 +193,11 @@ namespace DacityP
                     }
                     else if ((bool)networkUserBodyObject)
                     {
-                        if (modenabled && dirpmaster && dirpmaster.GetBodyObject() == networkUserBodyObject)
-                        {
-                            // NOTE: Is this what's causing the issues?
-                            if (!spectatetarget) cameraRigController.nextTarget = networkUserBodyObject;
-                            else cameraRigController.nextTarget = spectatetarget;
-                            cameraRigController.cameraMode = CameraModeDirector.director;
-                        }
-                        else
-                        {
-                            cameraRigController.nextTarget = networkUserBodyObject;
-                            cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
-                        }
+                        cameraRigController.nextTarget = networkUserBodyObject;
+                        cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
+                    } else if (runIsActive) {
+                        cameraRigController.nextTarget = spectatetarget;
+                        cameraRigController.cameraMode = CameraModeDirector.director;
                     }
                     else if (!cameraRigController.disableSpectating)
                     {
@@ -250,24 +242,20 @@ namespace DacityP
             }
         }
 
-        private void CameraRigController_onCameraTargetChanged(CameraRigController instance, GameObject targetobj)
-        {
-            if (dirpbody && (dirpbody == instance.targetBody))
-            {
-                instance.cameraMode = dirpnuser.cameraRigController.cameraMode = CameraModeDirector.director;
-            }
-        }
-
         private void SetupSceneChange()
         {
-            
             Debug.Log("Setting Up Spawncards...");
             DirectorState.UpdateMonsterSelection();
             if (activehud == null)
             {
                 Debug.Log("Attempting to instantiate UI...");
                 activehud = Instantiate(hud);
-                activehud.GetComponent<Canvas>().worldCamera = dirpnuser.cameraRigController.uiCam;
+                if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = dirpnuser.cameraRigController.uiCam;
+                else
+                {
+                    Debug.Log("Local network user doesn't exist! Attempting to regenerate...");
+
+                }
                 Debug.Log("UI Instantiated.");
             }
         }
@@ -292,7 +280,7 @@ namespace DacityP
             }
             for (int j = 0; j <= num; j++)
             {
-                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j]) && readOnlyInstancesList[j] != dirpbody) || true)
+                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j])) || true)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
                     return;
@@ -320,25 +308,12 @@ namespace DacityP
             }
             for (int j = readOnlyInstancesList.Count - 1; j >= num; j--)
             {
-                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j]) && readOnlyInstancesList[j] != dirpbody) || true)
+                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j])) || true)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
                     return;
                 }
             }
-        }
-
-        private GameObject InteractionDriver_FindBestInteractableObject(On.RoR2.InteractionDriver.orig_FindBestInteractableObject orig, InteractionDriver self)
-        {
-            if (dirpmaster == null) return orig(self);
-            if (self.characterBody != dirpmaster.GetBody()) return orig(self);
-            return null;
-        }
-
-        private void InteractionDriver_FixedUpdate(On.RoR2.InteractionDriver.orig_FixedUpdate orig, InteractionDriver self)
-        {
-            if (!dirpmaster) orig(self);
-            else if (self.characterBody != dirpmaster.GetBody()) orig(self);
         }
         
         public void Spawn(string mastername, string bodyname, Vector3 position, Quaternion rotation, EliteDef eliteDef, int levelbonus = 0)
@@ -366,43 +341,6 @@ namespace DacityP
 
         }
         
-        private void Run_OnServerCharacterBodySpawned(On.RoR2.Run.orig_OnServerCharacterBodySpawned orig, Run self, CharacterBody characterBody)
-        {
-            if (dirpmaster == null) return;
-            if (dirpmaster.GetBody() != characterBody) return;
-            // Since the orig has no content in it, we don't need to call it at all.
-            dirpbody = characterBody;
-            dirpkinemotor = dirpbody.GetComponentInChildren<KinematicCharacterMotor>();
-            Rigidbody r = dirpbody.rigidbody;
-            foreach (HurtBox x in dirpbody.hurtBoxGroup.hurtBoxes)
-            {
-                x.collider.enabled = false;
-            }
-            dirpbody.mainHurtBox.collider.enabled = false;
-            Debug.Log("Successfully disabled hitboxes!");
-            if (!dirpmaster.godMode) dirpmaster.ToggleGod();
-            Debug.Log("Godmode Enabled for contingency reasons");
-            dirpbody.AddBuff(RoR2Content.Buffs.Cloak);
-            dirpbody.teamComponent.hideAllyCardDisplay = true;
-            Debug.Log("Ally Card Display Hidden");
-            dirpmaster.money = 0;
-            SkillLocator s = dirpbody.skillLocator;
-            if (s == null)
-            {
-                Debug.Log("No skill locator detected on this body's GameObject.");
-            }
-            else
-            {
-                Debug.Log("We found a skillLocator! Now we set all skills to null.");
-                s.primary = null;
-                s.secondary = null;
-                s.utility = null;
-                s.special = null;
-            }
-            ChangeNextTarget();
-            if (viewingOverride != Vector3.zero) TeleportHelper.TeleportBody(dirpbody, viewingOverride);
-        }
-
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
         private static void CCCheckCameras(ConCommandArgs args)
         {

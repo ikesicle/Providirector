@@ -10,7 +10,6 @@ namespace DacityP;
 public class CameraModeDirector : CameraModePlayerBasic
 {
     private BlendableVector3 idealLocalCameraPosOverride = new Vector3(0f, 0f, -5f);
-
     public float cameraDistance
     {
         get { return idealLocalCameraPosOverride.value.z; }
