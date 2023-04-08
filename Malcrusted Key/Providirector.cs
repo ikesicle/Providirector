@@ -10,6 +10,8 @@ using KinematicCharacterController;
 using UnityEngine.Networking;
 using ProvidirectorGame;
 using JetBrains.Annotations;
+using static Rewired.UI.ControlMapper.ControlMapper;
+using System.Collections.Generic;
 
 #pragma warning disable Publicizer001
 
@@ -36,19 +38,23 @@ namespace DacityP
     public class Providirector : BaseUnityPlugin
     {
         private static bool modenabled = true;
+        private static bool inputmonitor = true;
         private static bool runIsActive = false;
-        private NetworkUser dirpnuser = null;
-        private GameObject spectatetarget = null;
-        private CameraRigController maincam = null;
+        private static GameObject hud;
+        private NetworkUser dirpnuser;
+        private LocalUser localuser;
+        private GameObject spectatetarget;
+        private CharacterMaster currentmaster;
+        private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
+        private CharacterBody currentbody => currentmaster.GetBody();
+        private CharacterMotor currentmotor => currentbody.characterMotor;
+        private CameraRigController maincam => dirpnuser.cameraRigController;
         private Vector3 viewingOverride = Vector3.zero;
-        private AssetBundle assets = null;
+        private AssetBundle assets;
         private GameObject activehud;
-        private static GameObject hud = null;
-        private static Vector3 moon2FightActivate = new Vector3(-57, 550, 38);
-        private static Vector3 moonFightActivate = new Vector3(91, 554, 83);
-        // Because Rewired is dumb and requires you to edit something else in the game's data to
-
-
+        private bool addPlayerControlToNextSpawnCardSpawn = false;
+        
+        private bool isSinglePlayer => RoR2Application.isInSinglePlayer;
 
         public void Awake()
         {
@@ -58,7 +64,14 @@ namespace DacityP
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
             On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
             On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
+            On.RoR2.Run.RecalculateDifficultyCoefficentInternal += Run_RecalculateDifficultyCoefficentInternal;
+            On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
+            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
+            On.RoR2.BossGroup.DropRewards += BossGroup_DropRewards;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
             R2API.Utils.CommandHelper.AddToConsoleWhenReady();
+
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
@@ -66,8 +79,154 @@ namespace DacityP
             
         }
 
+        private void BossGroup_DropRewards(On.RoR2.BossGroup.orig_DropRewards orig, BossGroup self)
+        {
+            if (!Run.instance)
+            {
+                Debug.LogError("No valid run instance!");
+                return;
+            }
+            if (self.rng == null)
+            {
+                Debug.LogError("RNG is null!");
+                return;
+            }
+            int participatingPlayerCount = PlayerCharacterMasterController.instances.Count;
+            if (participatingPlayerCount == 0)
+            {
+                return;
+            }
+            if ((bool)self.dropPosition)
+            {
+                PickupIndex none = PickupIndex.none;
+                if ((bool)self.dropTable)
+                {
+                    none = self.dropTable.GenerateDrop(self.rng);
+                }
+                else
+                {
+                    List<PickupIndex> list = Run.instance.availableTier2DropList;
+                    if (self.forceTier3Reward)
+                    {
+                        list = Run.instance.availableTier3DropList;
+                    }
+                    none = self.rng.NextElementUniform(list);
+                }
+                int num = 1 + self.bonusRewardCount;
+                if (self.scaleRewardsByPlayerCount)
+                {
+                    num *= participatingPlayerCount;
+                }
+                float angle = 360f / (float)num;
+                Vector3 vector = Quaternion.AngleAxis(UnityEngine.Random.Range(0, 360), Vector3.up) * (Vector3.up * 40f + Vector3.forward * 5f);
+                Quaternion quaternion = Quaternion.AngleAxis(angle, Vector3.up);
+                bool flag = self.bossDrops != null && self.bossDrops.Count > 0;
+                bool flag2 = self.bossDropTables != null && self.bossDropTables.Count > 0;
+                int num2 = 0;
+                while (num2 < num)
+                {
+                    PickupIndex pickupIndex = none;
+                    if (self.bossDrops != null && (flag || flag2) && self.rng.nextNormalizedFloat <= self.bossDropChance)
+                    {
+                        if (flag2)
+                        {
+                            PickupDropTable pickupDropTable = self.rng.NextElementUniform(self.bossDropTables);
+                            if (pickupDropTable != null)
+                            {
+                                pickupIndex = pickupDropTable.GenerateDrop(self.rng);
+                            }
+                        }
+                        else
+                        {
+                            pickupIndex = self.rng.NextElementUniform(self.bossDrops);
+                        }
+                    }
+                    PickupDropletController.CreatePickupDroplet(pickupIndex, self.dropPosition.position, vector);
+                    num2++;
+                    vector = quaternion * vector;
+                }
+            }
+            else
+            {
+                Debug.LogWarning("dropPosition not set for BossGroup! No item will be spawned.");
+            }
+        }
+
+        private Action<CharacterMaster> NewPrespawnSetup(On.RoR2.CharacterSpawnCard.orig_GetPreSpawnSetupCallback orig, CharacterSpawnCard self)
+        {
+            return (CharacterMaster c) =>
+            {
+                PlayerCharacterMasterController cmc = c.GetComponent<PlayerCharacterMasterController>();
+                if (addPlayerControlToNextSpawnCardSpawn && !cmc)
+                {
+                    cmc = gameObject.AddComponent<PlayerCharacterMasterController>();
+                    cmc.enabled = false;
+                    addPlayerControlToNextSpawnCardSpawn = false;
+                }
+            };
+        }
+
+        private void Run_RecalculateDifficultyCoefficentInternal(On.RoR2.Run.orig_RecalculateDifficultyCoefficentInternal orig, Run self)
+        {
+            if (!runIsActive)
+            {
+                orig(self);
+                return;
+            }
+            int ppc = PlayerCharacterMasterController.instances.Count;
+            float num = self.GetRunStopwatch();
+            DifficultyDef difficultyDef = DifficultyCatalog.GetDifficultyDef(self.selectedDifficulty);
+            float num2 = Mathf.Floor(num * (1f / 60f));
+            float num3 = (float)ppc * 0.3f;
+            float num4 = 0.7f + num3;
+            float num5 = 0.7f + num3;
+            float num6 = Mathf.Pow(ppc, 0.2f);
+            float num7 = 0.0506f * difficultyDef.scalingValue * num6;
+            float num8 = 0.0506f * difficultyDef.scalingValue * num6;
+            float num9 = Mathf.Pow(1.15f, self.stageClearCount);
+            self.compensatedDifficultyCoefficient = (num5 + num8 * num2) * num9;
+            self.difficultyCoefficient = (num4 + num7 * num2) * num9;
+            float num10 = (num4 + num7 * (num * (1f / 60f))) * Mathf.Pow(1.15f, self.stageClearCount);
+            self.ambientLevel = Mathf.Min((num10 - num4) / 0.33f + 1f, Run.ambientLevelCap);
+            int num11 = self.ambientLevelFloor;
+            self.ambientLevelFloor = Mathf.FloorToInt(self.ambientLevel);
+            if (num11 != self.ambientLevelFloor && num11 != 0 && self.ambientLevelFloor > num11) self.OnAmbientLevelUp();
+
+        }
+
+        private void MithrixPlayerControlSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
+        {
+            Debug.Log("OnMemAddedServer called...");
+            orig(self, master);
+            if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
+            AddPlayerControl(master);
+        }
+
+        private void BrotherEncounterPhaseBaseState_PreEncounterBegin(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_PreEncounterBegin orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self)
+        {
+            orig(self);
+            if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
+            Debug.LogFormat("Pre-encounter called for object on phase {0}", self.phaseControllerChildString);
+            addPlayerControlToNextSpawnCardSpawn = true;
+        }
+
+        private void CombatDirector_Awake(On.RoR2.CombatDirector.orig_Awake orig, CombatDirector self)
+        {
+            if (runIsActive)
+            {
+                self.creditMultiplier *= 0.5f;
+                Debug.Log("Combat Director credit count reduced.");
+            }
+            orig(self);
+        }
+
         private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
+            if (!modenabled)
+            {
+                orig(self, user);
+                return;
+            }
             if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
             NetworkUser localuser = dirpnuser ? dirpnuser : LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
             if (localuser == null) { Debug.Log("Local user does not have an associated network user!"); return; }
@@ -79,9 +238,8 @@ namespace DacityP
         {
             if (!runIsActive) return;
             if (dirpnuser == null) return;
-
             InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
-            InputManager.Slot1.PushState(Input.GetKey(KeyCode.Q));
+            InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
             InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
             InputManager.Slot3.PushState(Input.GetKey(KeyCode.Alpha3));
             InputManager.Slot4.PushState(Input.GetKey(KeyCode.Alpha4));
@@ -94,17 +252,23 @@ namespace DacityP
             InputManager.PrevTarget.PushState(Input.GetKey(KeyCode.Mouse1));
             Vector3 pos = Vector3.zero;
             Quaternion rot = Quaternion.identity;
-            if (dirpnuser && dirpnuser.cameraRigController)
+            if (dirpnuser && maincam)
             {
-                pos = dirpnuser.cameraRigController.sceneCam.transform.position;
-                rot = dirpnuser.cameraRigController.sceneCam.transform.rotation;
+                pos = maincam.sceneCam.transform.position;
+                rot = maincam.sceneCam.transform.rotation;
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
-            if (DirectorState.instance == null)
+            if (DirectorState.instance == null) return;
+            if (currentmaster && currentmotor)
             {
-                Debug.Log("No directorstate!");
-                return;
+                Debug.Log("===============");
+                Debug.LogFormat("Velocity: {0}", currentmotor.velocity);
+                Debug.LogFormat("Authority? : {0}", currentmotor.hasAuthority ? "Yes" : (currentmotor.hasEffectiveAuthority ? "Effectively" : "No"));
+                Debug.LogFormat("InputBank MoveVector: {0}", currentcontroller.bodyInputs.moveVector);
+                Debug.LogFormat("InputBank Jump: {0}", currentcontroller.bodyInputs.jump.justPressed);
+                Debug.LogFormat("InputBank Sprint: {0}", currentcontroller.bodyInputs.aimDirection);
             }
+            if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
             if (InputManager.Slot1.justPressed) DirectorState.instance.TrySpawn(0, pos, rot);
@@ -113,6 +277,7 @@ namespace DacityP
             if (InputManager.Slot4.justPressed) DirectorState.instance.TrySpawn(3, pos, rot);
             if (InputManager.Slot5.justPressed) DirectorState.instance.TrySpawn(4, pos, rot);
             if (InputManager.Slot6.justPressed) DirectorState.instance.TrySpawn(5, pos, rot);
+            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.Tier1Active = true;
             if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.Tier1Active = false;
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.Tier2Active = true;
@@ -123,19 +288,22 @@ namespace DacityP
 
         private void Run_onRunStartGlobal(Run instance)
         {
-            if (modenabled)
+            if (modenabled && NetworkServer.active)
             {
                 runIsActive = true;
                 Run.ambientLevelCap = 1500;
                 Debug.Log("Providirector has been set up for this run!");
                 if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
+                localuser = LocalUserManager.readOnlyLocalUsersList[0];
                 dirpnuser = LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
             }
         }
 
         private void Run_onRunDestroyGlobal(Run obj)
         {
+            if (!runIsActive) return;
             dirpnuser = null;
+            localuser = null;
             Run.ambientLevelCap = 99;
             if (activehud) Destroy(activehud);
             activehud = null;
@@ -148,7 +316,7 @@ namespace DacityP
             //if (sceneName == "moon2") viewingOverride = moon2FightActivate;
             //else if (sceneName == "moon") viewingOverride = moonFightActivate;
             //else viewingOverride = Vector3.zero;
-            Invoke("SetupSceneChange", 0.1f);
+            Invoke("SetupSceneChange", 1f);
         }
 
         private void RunCameraManager_Update(On.RoR2.RunCameraManager.orig_Update orig, RunCameraManager self)
@@ -250,14 +418,15 @@ namespace DacityP
             {
                 Debug.Log("Attempting to instantiate UI...");
                 activehud = Instantiate(hud);
-                if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = dirpnuser.cameraRigController.uiCam;
+                if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
                 else
                 {
-                    Debug.Log("Local network user doesn't exist! Attempting to regenerate...");
+                    Debug.Log("Local network user doesn't exist!");
 
                 }
                 Debug.Log("UI Instantiated.");
             }
+            currentmaster = null;
         }
 
         private void ChangeNextTarget()
@@ -315,15 +484,59 @@ namespace DacityP
                 }
             }
         }
-        
-        public void Spawn(string mastername, string bodyname, Vector3 position, Quaternion rotation, EliteDef eliteDef, int levelbonus = 0)
+
+        private void AddPlayerControl(CharacterMaster c)
+        {
+            DisengagePlayerControl();
+            Debug.LogFormat("Attempting to take control of CharacterMaster {0}", c.name);
+            currentmaster = c;
+            currentmaster.GetComponent<RoR2.CharacterAI.BaseAI>().enabled = false;
+            currentmaster.playerCharacterMasterController = currentmaster.GetComponent<PlayerCharacterMasterController>();
+            if (!currentcontroller)
+            {
+                Debug.LogWarningFormat("CharacterMaster {0} does not have a PCMC! Instantiating one now... though this will lead to desyncs between the client and server.", c.name);
+                currentmaster.playerCharacterMasterController = c.gameObject.AddComponent<PlayerCharacterMasterController>();
+            }
+            GameObject oldprefab = c.bodyPrefab;
+            currentcontroller.LinkToNetworkUserServer(dirpnuser);
+            currentcontroller.master.bodyPrefab = oldprefab; // RESET
+            if (activehud) activehud.SetActive(false);
+            currentcontroller.enabled = true;
+            Run.instance.userMasters[dirpnuser.id] = c;
+
+            currentmaster.onBodyDeath.AddListener(DisengagePlayerControl);
+            currentmaster.onBodyDestroyed += DisengagePlayerControl;
+        }
+
+        private void DisengagePlayerControl(CharacterBody _)
+        {
+            if (currentmaster)
+            {
+                currentmaster.onBodyDeath.RemoveListener(DisengagePlayerControl);
+                currentmaster.onBodyDestroyed -= DisengagePlayerControl;
+                if (currentcontroller) Destroy(currentcontroller);
+                currentmaster.playerCharacterMasterController = null;
+                currentmaster.GetComponent<RoR2.CharacterAI.BaseAI>().enabled = true;
+            }
+            currentmaster = null;
+            if (activehud) activehud.SetActive(true);
+            Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
+        }
+
+        private void DisengagePlayerControl()
+        {
+            DisengagePlayerControl(null);
+        }
+
+        public CharacterMaster Spawn(string mastername, string bodyname, Vector3 position, Quaternion rotation, EliteDef eliteDef = null, int levelbonus = 0, bool includePlayerControlInterface = true)
         {
             // Modified code taken from DebugToolkit
             GameObject preinst = MasterCatalog.FindMasterPrefab(mastername);
             GameObject preinstbody = BodyCatalog.FindBodyPrefab(bodyname);
-            if (!preinst || !preinstbody) return;
+            if (!preinst || !preinstbody) return null;
             GameObject bodyGameObject = UnityEngine.Object.Instantiate<GameObject>(preinst, position, rotation);
             CharacterMaster master = bodyGameObject.GetComponent<CharacterMaster>();
+            if (includePlayerControlInterface) bodyGameObject.AddComponent<PlayerCharacterMasterController>().enabled = false;
             NetworkServer.Spawn(bodyGameObject);
             master.bodyPrefab = preinstbody;
             master.SpawnBody(position, Quaternion.identity);
@@ -337,8 +550,7 @@ namespace DacityP
             if (levelbonus > 0) master.inventory.GiveItem(RoR2Content.Items.LevelBonus, levelbonus);
             master.teamIndex = TeamIndex.Monster;
             master.GetBody().teamComponent.teamIndex = TeamIndex.Monster;
-
-
+            return master;
         }
         
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
@@ -379,6 +591,61 @@ namespace DacityP
             Debug.Log(output);
         }
 
+        [ConCommand(commandName = "prvd_item", flags = ConVarFlags.None, helpText = "Gives an item to a user.")]
+        private static void CCGiveItem(ConCommandArgs args)
+        {
+            if (!NetworkServer.active)
+            {
+                Debug.LogError("prvd_item called on client.");
+                return;
+            }
+            if (args.Count != 4) {
+                Debug.Log("Usage: prvd_item [item name] [count] [target name]");
+                return;
+            }
+            CharacterMaster target = null;
+            foreach (PlayerCharacterMasterController cmc in PlayerCharacterMasterController.instances)
+            {
+                if (cmc.GetDisplayName() == args[3])
+                {
+                    target = cmc.master;
+                    break;
+                }
+            }
+            if (!target)
+            {
+                Debug.LogErrorFormat("Unable to find playerobject with name {0}", args[3]);
+                return;
+            }
+            ItemIndex itemind = ItemCatalog.FindItemIndex(args[1]);
+            
+            if (itemind == ItemIndex.None)
+            {
+                if (Int32.TryParse(args[1], out int direct)) itemind = (ItemIndex)direct;
+                else
+                {
+                    Debug.LogErrorFormat("Could not find corresponding item index for {0}", args[1]);
+                    return;
+                }
+            }
+            if (!target.inventory)
+            {
+                Debug.LogErrorFormat("Player {0} does not have an inventory object!", args[3]);
+                return;
+            }
+            if (!Int32.TryParse(args[2], out int count))
+            {
+                Debug.LogErrorFormat("{0} is not a valid count!", args[2]);
+                return;
+            }
+            ItemDef itemdef = ItemCatalog.GetItemDef(itemind);
+            if (!itemdef)
+            {
+                Debug.LogErrorFormat("No such item with index {0}", args[1]);
+                return;
+            }
+            target.inventory.GiveItem(itemdef);
+        }
     }
 }
 
