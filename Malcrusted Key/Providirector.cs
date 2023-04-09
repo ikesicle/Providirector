@@ -39,7 +39,6 @@ namespace DacityP
     public class Providirector : BaseUnityPlugin
     {
         private static bool modenabled = true;
-        private static bool inputmonitor = true;
         private static bool runIsActive = false;
         private static GameObject hud;
         private NetworkUser dirpnuser;
@@ -261,8 +260,8 @@ namespace DacityP
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
             if (DirectorState.instance == null) return;
-            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
+            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
             if (InputManager.Slot1.justPressed) DirectorState.instance.TrySpawn(0, pos, rot);
@@ -484,14 +483,6 @@ namespace DacityP
             Debug.LogFormat("Attempting to take control of CharacterMaster {0}", c.name);
             currentmaster = c;
             currentai = currentmaster.GetComponent<BaseAI>();
-            if (currentai != null)
-            {
-                currentai.OnBodyLost(currentbody);
-                Debug.LogFormat("Disabled the AI... Current body is now {0}", currentai.body);
-            } else
-            {
-                Debug.Log("It doesn't have an AI!");
-            }
             currentmaster.playerCharacterMasterController = currentmaster.GetComponent<PlayerCharacterMasterController>();
             if (!currentcontroller)
             {
@@ -505,17 +496,19 @@ namespace DacityP
             currentcontroller.enabled = true;
             Run.instance.userMasters[dirpnuser.id] = c;
             currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
-            currentmaster.onBodyDestroyed += DisengagePlayerControl;
+            AIDisable();
+            currentai.onBodyDiscovered += AIDisable;
+            GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
         }
 
-        private void DisengagePlayerControl(CharacterBody _)
+        private void DisengagePlayerControl()
         {
             if (currentmaster)
             {
-                currentmaster.onBodyDestroyed -= DisengagePlayerControl;
+                GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
                 if (currentcontroller) Destroy(currentcontroller);
-                if (currentai) currentai.OnBodyStart(currentbody);
-                Debug.Log("Reset AI characterbody!");
+                currentai.onBodyDiscovered -= AIDisable;
+                AIEnable();
                 currentai = null;
                 if (currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
@@ -525,9 +518,34 @@ namespace DacityP
             Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
         }
 
-        private void DisengagePlayerControl()
+        private void AIDisable()
         {
-            DisengagePlayerControl(null);
+            if (currentai)
+            {
+                currentai.OnBodyLost(currentbody);
+                currentai.enabled = false;
+                Debug.Log("AI Disabled.");
+            }
+            else
+            {
+                Debug.Log("It doesn't have an AI!");
+            }
+        }
+
+        private void AIDisable(CharacterBody _) { AIDisable(); }
+        
+        private void AIEnable()
+        {
+            if (currentai)
+            {
+                currentai.enabled = true;
+                currentai.OnBodyStart(currentbody);
+            }
+        }
+
+        private void DisengagePlayerControl(DamageReport dr)
+        {
+            if (dr.victimMaster == currentmaster) DisengagePlayerControl();
         }
 
         public CharacterMaster Spawn(string mastername, string bodyname, Vector3 position, Quaternion rotation, EliteDef eliteDef = null, int levelbonus = 0, bool includePlayerControlInterface = true)
@@ -601,14 +619,15 @@ namespace DacityP
                 Debug.LogError("prvd_item called on client.");
                 return;
             }
-            if (args.Count != 4) {
+            if (args.Count != 3) {
                 Debug.Log("Usage: prvd_item [item name] [count] [target name]");
+                Debug.LogFormat("3 arguments required, but {1} given.", args.Count);
                 return;
             }
             CharacterMaster target = null;
             foreach (PlayerCharacterMasterController cmc in PlayerCharacterMasterController.instances)
             {
-                if (cmc.GetDisplayName() == args[3])
+                if (cmc.GetDisplayName() == args[2])
                 {
                     target = cmc.master;
                     break;
@@ -616,17 +635,17 @@ namespace DacityP
             }
             if (!target)
             {
-                Debug.LogErrorFormat("Unable to find playerobject with name {0}", args[3]);
+                Debug.LogErrorFormat("Unable to find playerobject with name {0}", args[2]);
                 return;
             }
-            ItemIndex itemind = ItemCatalog.FindItemIndex(args[1]);
+            ItemIndex itemind = ItemCatalog.FindItemIndex(args[0]);
             
             if (itemind == ItemIndex.None)
             {
-                if (Int32.TryParse(args[1], out int direct)) itemind = (ItemIndex)direct;
+                if (Int32.TryParse(args[0], out int direct)) itemind = (ItemIndex)direct;
                 else
                 {
-                    Debug.LogErrorFormat("Could not find corresponding item index for {0}", args[1]);
+                    Debug.LogErrorFormat("Could not find corresponding item index for {0}", args[0]);
                     return;
                 }
             }
@@ -635,15 +654,15 @@ namespace DacityP
                 Debug.LogErrorFormat("Player {0} does not have an inventory object!", args[3]);
                 return;
             }
-            if (!Int32.TryParse(args[2], out int count))
+            if (!Int32.TryParse(args[1], out int count))
             {
-                Debug.LogErrorFormat("{0} is not a valid count!", args[2]);
+                Debug.LogErrorFormat("{0} is not a valid count!", args[1]);
                 return;
             }
             ItemDef itemdef = ItemCatalog.GetItemDef(itemind);
             if (!itemdef)
             {
-                Debug.LogErrorFormat("No such item with index {0}", args[1]);
+                Debug.LogErrorFormat("No such item with index {0}", args[0]);
                 return;
             }
             target.inventory.GiveItem(itemdef);
