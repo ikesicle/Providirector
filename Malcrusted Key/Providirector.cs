@@ -12,6 +12,7 @@ using ProvidirectorGame;
 using JetBrains.Annotations;
 using static Rewired.UI.ControlMapper.ControlMapper;
 using System.Collections.Generic;
+using RoR2.CharacterAI;
 
 #pragma warning disable Publicizer001
 
@@ -49,6 +50,7 @@ namespace DacityP
         private CharacterBody currentbody => currentmaster.GetBody();
         private CharacterMotor currentmotor => currentbody.characterMotor;
         private CameraRigController maincam => dirpnuser.cameraRigController;
+        private BaseAI currentai;
         private Vector3 viewingOverride = Vector3.zero;
         private AssetBundle assets;
         private GameObject activehud;
@@ -259,15 +261,7 @@ namespace DacityP
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
             if (DirectorState.instance == null) return;
-            if (currentmaster && currentmotor)
-            {
-                Debug.Log("===============");
-                Debug.LogFormat("Velocity: {0}", currentmotor.velocity);
-                Debug.LogFormat("Authority? : {0}", currentmotor.hasAuthority ? "Yes" : (currentmotor.hasEffectiveAuthority ? "Effectively" : "No"));
-                Debug.LogFormat("InputBank MoveVector: {0}", currentcontroller.bodyInputs.moveVector);
-                Debug.LogFormat("InputBank Jump: {0}", currentcontroller.bodyInputs.jump.justPressed);
-                Debug.LogFormat("InputBank Sprint: {0}", currentcontroller.bodyInputs.aimDirection);
-            }
+            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
@@ -277,7 +271,6 @@ namespace DacityP
             if (InputManager.Slot4.justPressed) DirectorState.instance.TrySpawn(3, pos, rot);
             if (InputManager.Slot5.justPressed) DirectorState.instance.TrySpawn(4, pos, rot);
             if (InputManager.Slot6.justPressed) DirectorState.instance.TrySpawn(5, pos, rot);
-            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.Tier1Active = true;
             if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.Tier1Active = false;
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.Tier2Active = true;
@@ -490,7 +483,15 @@ namespace DacityP
             DisengagePlayerControl();
             Debug.LogFormat("Attempting to take control of CharacterMaster {0}", c.name);
             currentmaster = c;
-            currentmaster.GetComponent<RoR2.CharacterAI.BaseAI>().enabled = false;
+            currentai = currentmaster.GetComponent<BaseAI>();
+            if (currentai != null)
+            {
+                currentai.OnBodyLost(currentbody);
+                Debug.LogFormat("Disabled the AI... Current body is now {0}", currentai.body);
+            } else
+            {
+                Debug.Log("It doesn't have an AI!");
+            }
             currentmaster.playerCharacterMasterController = currentmaster.GetComponent<PlayerCharacterMasterController>();
             if (!currentcontroller)
             {
@@ -503,8 +504,7 @@ namespace DacityP
             if (activehud) activehud.SetActive(false);
             currentcontroller.enabled = true;
             Run.instance.userMasters[dirpnuser.id] = c;
-
-            currentmaster.onBodyDeath.AddListener(DisengagePlayerControl);
+            currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
             currentmaster.onBodyDestroyed += DisengagePlayerControl;
         }
 
@@ -512,11 +512,13 @@ namespace DacityP
         {
             if (currentmaster)
             {
-                currentmaster.onBodyDeath.RemoveListener(DisengagePlayerControl);
                 currentmaster.onBodyDestroyed -= DisengagePlayerControl;
                 if (currentcontroller) Destroy(currentcontroller);
+                if (currentai) currentai.OnBodyStart(currentbody);
+                Debug.Log("Reset AI characterbody!");
+                currentai = null;
+                if (currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
-                currentmaster.GetComponent<RoR2.CharacterAI.BaseAI>().enabled = true;
             }
             currentmaster = null;
             if (activehud) activehud.SetActive(true);
@@ -534,7 +536,7 @@ namespace DacityP
             GameObject preinst = MasterCatalog.FindMasterPrefab(mastername);
             GameObject preinstbody = BodyCatalog.FindBodyPrefab(bodyname);
             if (!preinst || !preinstbody) return null;
-            GameObject bodyGameObject = UnityEngine.Object.Instantiate<GameObject>(preinst, position, rotation);
+            GameObject bodyGameObject = Instantiate(preinst, position, rotation);
             CharacterMaster master = bodyGameObject.GetComponent<CharacterMaster>();
             if (includePlayerControlInterface) bodyGameObject.AddComponent<PlayerCharacterMasterController>().enabled = false;
             NetworkServer.Spawn(bodyGameObject);
