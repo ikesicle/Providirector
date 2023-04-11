@@ -13,6 +13,7 @@ using JetBrains.Annotations;
 using static Rewired.UI.ControlMapper.ControlMapper;
 using System.Collections.Generic;
 using RoR2.CharacterAI;
+using RoR2.Stats;
 
 #pragma warning disable Publicizer001
 
@@ -47,15 +48,11 @@ namespace DacityP
         private CharacterMaster currentmaster;
         private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
         private CharacterBody currentbody => currentmaster.GetBody();
-        private CharacterMotor currentmotor => currentbody.characterMotor;
         private CameraRigController maincam => dirpnuser.cameraRigController;
         private BaseAI currentai;
-        private Vector3 viewingOverride = Vector3.zero;
         private AssetBundle assets;
         private GameObject activehud;
-        private bool addPlayerControlToNextSpawnCardSpawn = false;
-        
-        private bool isSinglePlayer => RoR2Application.isInSinglePlayer;
+        private bool addPlayerControlToNextSpawnCardSpawn;
 
         public void Awake()
         {
@@ -82,6 +79,11 @@ namespace DacityP
 
         private void BossGroup_DropRewards(On.RoR2.BossGroup.orig_DropRewards orig, BossGroup self)
         {
+            if (!runIsActive)
+            {
+                orig(self);
+                return;
+            }
             if (!Run.instance)
             {
                 Debug.LogError("No valid run instance!");
@@ -158,10 +160,13 @@ namespace DacityP
             return (CharacterMaster c) =>
             {
                 PlayerCharacterMasterController cmc = c.GetComponent<PlayerCharacterMasterController>();
-                if (addPlayerControlToNextSpawnCardSpawn && !cmc)
+                PlayerStatsComponent psc = c.GetComponent<PlayerStatsComponent>();
+                if (addPlayerControlToNextSpawnCardSpawn)
                 {
-                    cmc = gameObject.AddComponent<PlayerCharacterMasterController>();
+                    if (!cmc) cmc = c.gameObject.AddComponent<PlayerCharacterMasterController>();
                     cmc.enabled = false;
+                    if (!psc) c.gameObject.AddComponent<PlayerStatsComponent>();
+                    Debug.LogFormat("Added player controls to {0}", c.name);
                     addPlayerControlToNextSpawnCardSpawn = false;
                 }
             };
@@ -197,7 +202,6 @@ namespace DacityP
 
         private void MithrixPlayerControlSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
         {
-            Debug.Log("OnMemAddedServer called...");
             orig(self, master);
             if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
             AddPlayerControl(master);
@@ -223,7 +227,7 @@ namespace DacityP
 
         private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
-            if (!modenabled)
+            if (!modenabled || !runIsActive)
             {
                 orig(self, user);
                 return;
@@ -260,6 +264,10 @@ namespace DacityP
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
             if (DirectorState.instance == null) return;
+            if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.tier1Active = true;
+            if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.tier1Active = false;
+            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.tier2Active = true;
+            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.tier2Active = false;
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
             if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
@@ -270,10 +278,6 @@ namespace DacityP
             if (InputManager.Slot4.justPressed) DirectorState.instance.TrySpawn(3, pos, rot);
             if (InputManager.Slot5.justPressed) DirectorState.instance.TrySpawn(4, pos, rot);
             if (InputManager.Slot6.justPressed) DirectorState.instance.TrySpawn(5, pos, rot);
-            if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.Tier1Active = true;
-            if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.Tier1Active = false;
-            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.Tier2Active = true;
-            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.Tier2Active = false;
             if (InputManager.SwapPage.justPressed) DirectorState.instance.secondPage = !DirectorState.instance.secondPage;
 
         }
@@ -299,6 +303,7 @@ namespace DacityP
             Run.ambientLevelCap = 99;
             if (activehud) Destroy(activehud);
             activehud = null;
+
             runIsActive = false;
         }
 
@@ -308,7 +313,7 @@ namespace DacityP
             //if (sceneName == "moon2") viewingOverride = moon2FightActivate;
             //else if (sceneName == "moon") viewingOverride = moonFightActivate;
             //else viewingOverride = Vector3.zero;
-            Invoke("SetupSceneChange", 1f);
+            if (runIsActive) Invoke("SetupSceneChange", 1f);
         }
 
         private void RunCameraManager_Update(On.RoR2.RunCameraManager.orig_Update orig, RunCameraManager self)
@@ -404,19 +409,16 @@ namespace DacityP
 
         private void SetupSceneChange()
         {
-            Debug.Log("Setting Up Spawncards...");
             DirectorState.UpdateMonsterSelection();
             if (activehud == null)
             {
-                Debug.Log("Attempting to instantiate UI...");
                 activehud = Instantiate(hud);
                 if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
-                else
-                {
-                    Debug.Log("Local network user doesn't exist!");
-
-                }
+                else Debug.Log("Local network user doesn't exist!");
+                if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
+                else Debug.LogWarning("No DirectorState exists yet.");
                 Debug.Log("UI Instantiated.");
+                HUDEnable();
             }
             currentmaster = null;
         }
@@ -484,16 +486,23 @@ namespace DacityP
             currentmaster = c;
             currentai = currentmaster.GetComponent<BaseAI>();
             currentmaster.playerCharacterMasterController = currentmaster.GetComponent<PlayerCharacterMasterController>();
+            PlayerStatsComponent playerStatsComponent = currentmaster.GetComponent<PlayerStatsComponent>();
             if (!currentcontroller)
             {
                 Debug.LogWarningFormat("CharacterMaster {0} does not have a PCMC! Instantiating one now... though this will lead to desyncs between the client and server.", c.name);
                 currentmaster.playerCharacterMasterController = c.gameObject.AddComponent<PlayerCharacterMasterController>();
             }
+            if (!playerStatsComponent)
+            {
+                Debug.LogWarningFormat("CharacterMaster {0} does not have a PSC! Instantiating one now... though this will lead to desyncs between the client and server.", c.name);
+                playerStatsComponent = c.gameObject.AddComponent<PlayerStatsComponent>();
+            }
             GameObject oldprefab = c.bodyPrefab;
             currentcontroller.LinkToNetworkUserServer(dirpnuser);
             currentcontroller.master.bodyPrefab = oldprefab; // RESET
-            if (activehud) activehud.SetActive(false);
+            HUDDisable();
             currentcontroller.enabled = true;
+            playerStatsComponent.enabled = true;
             Run.instance.userMasters[dirpnuser.id] = c;
             currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
             AIDisable();
@@ -506,15 +515,16 @@ namespace DacityP
             if (currentmaster)
             {
                 GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
-                if (currentcontroller) Destroy(currentcontroller);
                 currentai.onBodyDiscovered -= AIDisable;
                 AIEnable();
+                if (currentmaster.GetComponent<PlayerStatsComponent>()) Destroy(currentmaster.GetComponent<PlayerStatsComponent>());
+                if (currentcontroller) Destroy(currentcontroller);
                 currentai = null;
                 if (currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
             }
             currentmaster = null;
-            if (activehud) activehud.SetActive(true);
+            HUDEnable();
             Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
         }
 
@@ -522,7 +532,7 @@ namespace DacityP
         {
             if (currentai)
             {
-                currentai.OnBodyLost(currentbody);
+                if (currentbody) currentai.OnBodyLost(currentbody);
                 currentai.enabled = false;
                 Debug.Log("AI Disabled.");
             }
@@ -540,6 +550,7 @@ namespace DacityP
             {
                 currentai.enabled = true;
                 currentai.OnBodyStart(currentbody);
+                Debug.Log("AI Enabled.");
             }
         }
 
@@ -556,7 +567,15 @@ namespace DacityP
             if (!preinst || !preinstbody) return null;
             GameObject bodyGameObject = Instantiate(preinst, position, rotation);
             CharacterMaster master = bodyGameObject.GetComponent<CharacterMaster>();
-            if (includePlayerControlInterface) bodyGameObject.AddComponent<PlayerCharacterMasterController>().enabled = false;
+            if (includePlayerControlInterface)
+            {
+                bodyGameObject.AddComponent<PlayerCharacterMasterController>().enabled = false;
+                if (!bodyGameObject.GetComponent<PlayerStatsComponent>())
+                {
+                    Debug.Log("CharacterMaster does not have stat component. Adding...");
+                    bodyGameObject.AddComponent<PlayerStatsComponent>().enabled = false;
+                }
+            }
             NetworkServer.Spawn(bodyGameObject);
             master.bodyPrefab = preinstbody;
             master.SpawnBody(position, Quaternion.identity);
@@ -572,7 +591,23 @@ namespace DacityP
             master.GetBody().teamComponent.teamIndex = TeamIndex.Monster;
             return master;
         }
-        
+
+        private void HUDDisable()
+        {
+            if (activehud)
+            {
+                activehud.GetComponent<Canvas>().enabled = false;
+            }
+        }
+
+        private void HUDEnable()
+        {
+            if (activehud)
+            {
+                activehud.GetComponent<Canvas>().enabled = true;
+            }
+        }
+
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
         private static void CCCheckCameras(ConCommandArgs args)
         {
