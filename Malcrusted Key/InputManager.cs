@@ -50,10 +50,10 @@ public static class InputManager
     public static ButtonState Slot4;
     public static ButtonState Slot5;
     public static ButtonState Slot6;
-    public static ButtonState Slot7;
     public static ButtonState ToggleAffixCommon;
     public static ButtonState ToggleAffixRare;
     public static ButtonState NextTarget;
     public static ButtonState PrevTarget;
+    public static ButtonState FocusTarget;
 }
 

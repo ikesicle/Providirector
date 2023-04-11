@@ -56,9 +56,9 @@ namespace DacityP
 
         public void Awake()
         {
-            RoR2.Run.onRunStartGlobal += Run_onRunStartGlobal;
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
+            On.RoR2.Run.Start += Run_Start;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
             On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
             On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
@@ -75,6 +75,20 @@ namespace DacityP
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
             
+        }
+
+        private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
+        {
+            if (modenabled && NetworkServer.active)
+            {
+                runIsActive = true;
+                Run.ambientLevelCap = 1500;
+                Debug.Log("Providirector has been set up for this run!");
+                if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
+                localuser = LocalUserManager.readOnlyLocalUsersList[0];
+                dirpnuser = localuser.currentNetworkUser;
+            }
+            orig(self);
         }
 
         private void BossGroup_DropRewards(On.RoR2.BossGroup.orig_DropRewards orig, BossGroup self)
@@ -227,15 +241,13 @@ namespace DacityP
 
         private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
-            if (!modenabled || !runIsActive)
+            if (!modenabled)
             {
                 orig(self, user);
                 return;
             }
-            if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
-            NetworkUser localuser = dirpnuser ? dirpnuser : LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
-            if (localuser == null) { Debug.Log("Local user does not have an associated network user!"); return; }
-            if (user != localuser) orig(self, user);
+            if (dirpnuser == null) { Debug.Log("PRVD Network user is not set! Defaulting to regular add behaviour"); orig(self, user); return; }
+            if (user != dirpnuser) orig(self, user);
             else Debug.Log("Player creation was stopped by Providirector.");
         }
 
@@ -250,11 +262,11 @@ namespace DacityP
             InputManager.Slot4.PushState(Input.GetKey(KeyCode.Alpha4));
             InputManager.Slot5.PushState(Input.GetKey(KeyCode.Alpha5));
             InputManager.Slot6.PushState(Input.GetKey(KeyCode.Alpha6));
-            InputManager.Slot7.PushState(Input.GetKey(KeyCode.Alpha7));
             InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
             InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
             InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
             InputManager.PrevTarget.PushState(Input.GetKey(KeyCode.Mouse1));
+            InputManager.FocusTarget.PushState(Input.GetKey(KeyCode.F));
             Vector3 pos = Vector3.zero;
             Quaternion rot = Quaternion.identity;
             if (dirpnuser && maincam)
@@ -269,7 +281,6 @@ namespace DacityP
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.tier2Active = true;
             if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.tier2Active = false;
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
-            if (InputManager.Slot7.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
             if (InputManager.Slot1.justPressed) DirectorState.instance.TrySpawn(0, pos, rot);
@@ -279,20 +290,22 @@ namespace DacityP
             if (InputManager.Slot5.justPressed) DirectorState.instance.TrySpawn(4, pos, rot);
             if (InputManager.Slot6.justPressed) DirectorState.instance.TrySpawn(5, pos, rot);
             if (InputManager.SwapPage.justPressed) DirectorState.instance.secondPage = !DirectorState.instance.secondPage;
-
-        }
-
-        private void Run_onRunStartGlobal(Run instance)
-        {
-            if (modenabled && NetworkServer.active)
+            if (InputManager.FocusTarget.justPressed)
             {
-                runIsActive = true;
-                Run.ambientLevelCap = 1500;
-                Debug.Log("Providirector has been set up for this run!");
-                if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
-                localuser = LocalUserManager.readOnlyLocalUsersList[0];
-                dirpnuser = LocalUserManager.readOnlyLocalUsersList[0].currentNetworkUser;
+                if (spectatetarget) Debug.LogFormat("Asking {0} enemies to attack the current target {1}", DirectorState.instance.spawnedCharacters.Count, Util.GetBestBodyName(spectatetarget));
+                foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
+                {
+                    foreach (BaseAI ai in c.aiComponents)
+                    {
+                        if (spectatetarget)
+                        {
+                            ai.currentEnemy.gameObject = spectatetarget;
+                            ai.enemyAttentionDuration = 10f;
+                        }
+                    }
+                }
             }
+
         }
 
         private void Run_onRunDestroyGlobal(Run obj)
@@ -512,6 +525,7 @@ namespace DacityP
 
         private void DisengagePlayerControl()
         {
+            Debug.Log("Deactivating...");
             if (currentmaster)
             {
                 GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
