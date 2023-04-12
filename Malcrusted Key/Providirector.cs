@@ -42,6 +42,7 @@ namespace DacityP
         private static bool modenabled = true;
         private static bool runIsActive = false;
         private static GameObject hud;
+        private static GameObject commandPanelPrefab;
         private NetworkUser dirpnuser;
         private LocalUser localuser;
         private GameObject spectatetarget;
@@ -68,13 +69,58 @@ namespace DacityP
             On.RoR2.BossGroup.DropRewards += BossGroup_DropRewards;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
+            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
+            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter += ActivateBoostPhase2;
+            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += LockOnPhase3;
+            On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter += ActivateFinalBoost;
             R2API.Utils.CommandHelper.AddToConsoleWhenReady();
-
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
-            
+        }
+
+        private void ActivateFinalBoost(On.EntityStates.Missions.BrotherEncounter.EncounterFinished.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.EncounterFinished self)
+        {
+            orig(self);
+            if (DirectorState.instance)
+            {
+                DirectorState.instance.locked = false;
+                DirectorState.instance.teleporterBoost = true;
+            }
+        }
+
+        private void LockOnPhase3(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)
+        {
+            orig(self);
+            if (DirectorState.instance)
+            {
+                DirectorState.instance.locked = true;
+                DirectorState.instance.teleporterBoost = true;
+            }
+        }
+
+        private void ActivateBoostPhase2(On.EntityStates.Missions.BrotherEncounter.Phase2.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase2 self)
+        {
+            orig(self);
+            if (DirectorState.instance)
+            {
+                DirectorState.instance.locked = false;
+                DirectorState.instance.teleporterBoost = true;
+            }
+        }
+
+        private void LockOnPhase1(On.EntityStates.Missions.BrotherEncounter.Phase1.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase1 self)
+        {
+            orig(self);
+            if (DirectorState.instance) DirectorState.instance.locked = true;
+        }
+
+        public void Start()
+        {
+            PickupPickerController pcp = RoR2.Artifacts.CommandArtifactManager.commandCubePrefab.GetComponent<PickupPickerController>();
+            if (pcp) commandPanelPrefab = pcp.panelPrefab;
+            else Debug.Log("Unable to retrieve panel prefab.");
         }
 
         private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
@@ -262,6 +308,7 @@ namespace DacityP
             InputManager.Slot4.PushState(Input.GetKey(KeyCode.Alpha4));
             InputManager.Slot5.PushState(Input.GetKey(KeyCode.Alpha5));
             InputManager.Slot6.PushState(Input.GetKey(KeyCode.Alpha6));
+            InputManager.DebugSpawn.PushState(Input.GetKey(KeyCode.Alpha0));
             InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
             InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
             InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
@@ -281,6 +328,7 @@ namespace DacityP
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.tier2Active = true;
             if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.tier2Active = false;
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
+            if (InputManager.DebugSpawn.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
             if (InputManager.Slot1.justPressed) DirectorState.instance.TrySpawn(0, pos, rot);
@@ -292,12 +340,14 @@ namespace DacityP
             if (InputManager.SwapPage.justPressed) DirectorState.instance.secondPage = !DirectorState.instance.secondPage;
             if (InputManager.FocusTarget.justPressed)
             {
-                if (spectatetarget) Debug.LogFormat("Asking {0} enemies to attack the current target {1}", DirectorState.instance.spawnedCharacters.Count, Util.GetBestBodyName(spectatetarget));
-                foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
-                {
-                    foreach (BaseAI ai in c.aiComponents)
+                if (spectatetarget) {
+                    Debug.LogFormat("Asking {0} enemies to attack the current target {1}", DirectorState.instance.spawnedCharacters.Count, Util.GetBestBodyName(spectatetarget));
+
+                    CharacterMaster target = spectatetarget.GetComponent<CharacterMaster>();
+                    foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
                     {
-                        if (spectatetarget)
+                        if (target == c) continue;
+                        foreach (BaseAI ai in c.aiComponents)
                         {
                             ai.currentEnemy.gameObject = spectatetarget;
                             ai.enemyAttentionDuration = 10f;
@@ -563,7 +613,7 @@ namespace DacityP
             if (currentai)
             {
                 currentai.enabled = true;
-                currentai.OnBodyStart(currentbody);
+                if (currentbody) currentai.OnBodyStart(currentbody);
                 Debug.Log("AI Enabled.");
             }
         }
