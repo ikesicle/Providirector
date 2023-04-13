@@ -56,5 +56,6 @@ public static class InputManager
     public static ButtonState NextTarget;
     public static ButtonState PrevTarget;
     public static ButtonState FocusTarget;
+    public static ButtonState BoostTarget;
 }
 

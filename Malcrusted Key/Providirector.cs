@@ -54,6 +54,7 @@ namespace DacityP
         private AssetBundle assets;
         private GameObject activehud;
         private bool addPlayerControlToNextSpawnCardSpawn;
+        private bool boosting; // TODO: Move this and the BoostEnable/Disable methods into the DirectorState class
 
         public void Awake()
         {
@@ -309,6 +310,7 @@ namespace DacityP
             InputManager.Slot5.PushState(Input.GetKey(KeyCode.Alpha5));
             InputManager.Slot6.PushState(Input.GetKey(KeyCode.Alpha6));
             InputManager.DebugSpawn.PushState(Input.GetKey(KeyCode.Alpha0));
+            InputManager.BoostTarget.PushState(Input.GetKey(KeyCode.B));
             InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
             InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
             InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
@@ -355,7 +357,13 @@ namespace DacityP
                     }
                 }
             }
-
+            if (InputManager.BoostTarget.justPressed) BoostEnable();
+            if (InputManager.BoostTarget.justReleased) BoostDisable();
+            if (boosting)
+            {
+                DirectorState.instance.credits -= (50 + DirectorState.instance.maxCredits / 30) * Time.deltaTime;
+                if (DirectorState.instance.credits <= 0) BoostDisable();
+            }
         }
 
         private void Run_onRunDestroyGlobal(Run obj)
@@ -670,6 +678,28 @@ namespace DacityP
             {
                 activehud.GetComponent<Canvas>().enabled = true;
             }
+        }
+
+        private void BoostEnable()
+        {
+            foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
+            {
+                CharacterBody body = c.GetBody();
+                if (body && !body.HasBuff(RoR2Content.Buffs.TeamWarCry)) body.AddBuff(RoR2Content.Buffs.TeamWarCry);
+                if (body && !body.HasBuff(RoR2Content.Buffs.PowerBuff)) body.AddBuff(RoR2Content.Buffs.PowerBuff);
+            }
+            boosting = true;
+        }
+
+        private void BoostDisable()
+        {
+            foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
+            {
+                CharacterBody body = c.GetBody();
+                if (body && body.HasBuff(RoR2Content.Buffs.TeamWarCry)) body.RemoveBuff(RoR2Content.Buffs.TeamWarCry);
+                if (body && body.HasBuff(RoR2Content.Buffs.PowerBuff)) body.RemoveBuff(RoR2Content.Buffs.PowerBuff);
+            }
+            boosting = false;
         }
 
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
