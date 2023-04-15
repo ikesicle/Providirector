@@ -4,13 +4,9 @@ using RoR2.CameraModes;
 using R2API.Utils;
 using UnityEngine;
 using System;
-using System.IO;
 using System.Collections.ObjectModel;
-using KinematicCharacterController;
 using UnityEngine.Networking;
 using ProvidirectorGame;
-using JetBrains.Annotations;
-using static Rewired.UI.ControlMapper.ControlMapper;
 using System.Collections.Generic;
 using RoR2.CharacterAI;
 using RoR2.Stats;
@@ -41,6 +37,7 @@ namespace DacityP
     {
         private static bool modenabled = true;
         private static bool runIsActive = false;
+        private static bool debugEnabled = false;
         private static GameObject hud;
         private static GameObject commandPanelPrefab;
         private NetworkUser dirpnuser;
@@ -54,7 +51,8 @@ namespace DacityP
         private AssetBundle assets;
         private GameObject activehud;
         private bool addPlayerControlToNextSpawnCardSpawn;
-        private bool boosting; // TODO: Move this and the BoostEnable/Disable methods into the DirectorState class
+
+        public static Providirector instance;
 
         public void Awake()
         {
@@ -81,40 +79,38 @@ namespace DacityP
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
         }
 
+        void OnEnable()
+        {
+            instance = this;
+        }
+
+        void OnDisable()
+        {
+            instance = null;
+        }
+
         private void ActivateFinalBoost(On.EntityStates.Missions.BrotherEncounter.EncounterFinished.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.EncounterFinished self)
         {
             orig(self);
-            if (DirectorState.instance)
-            {
-                DirectorState.instance.locked = false;
-                DirectorState.instance.teleporterBoost = true;
-            }
+            if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
         }
 
         private void LockOnPhase3(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)
         {
             orig(self);
-            if (DirectorState.instance)
-            {
-                DirectorState.instance.locked = true;
-                DirectorState.instance.teleporterBoost = true;
-            }
+            if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
         }
 
         private void ActivateBoostPhase2(On.EntityStates.Missions.BrotherEncounter.Phase2.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase2 self)
         {
             orig(self);
-            if (DirectorState.instance)
-            {
-                DirectorState.instance.locked = false;
-                DirectorState.instance.teleporterBoost = true;
-            }
+            if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
         }
 
         private void LockOnPhase1(On.EntityStates.Missions.BrotherEncounter.Phase1.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase1 self)
         {
             orig(self);
-            if (DirectorState.instance) DirectorState.instance.locked = true;
+            if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
         }
 
         public void Start()
@@ -325,10 +321,10 @@ namespace DacityP
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
             if (DirectorState.instance == null) return;
-            if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.tier1Active = true;
-            if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.tier1Active = false;
-            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.tier2Active = true;
-            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.tier2Active = false;
+            if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level1;
+            if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
+            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level2;
+            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
             if (InputManager.DebugSpawn.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
@@ -357,13 +353,7 @@ namespace DacityP
                     }
                 }
             }
-            if (InputManager.BoostTarget.justPressed) BoostEnable();
-            if (InputManager.BoostTarget.justReleased) BoostDisable();
-            if (boosting)
-            {
-                DirectorState.instance.credits -= (50 + DirectorState.instance.maxCredits / 30) * Time.deltaTime;
-                if (DirectorState.instance.credits <= 0) BoostDisable();
-            }
+            if (InputManager.BoostTarget.justPressed) DirectorState.instance.ApplyFrenzy();
         }
 
         private void Run_onRunDestroyGlobal(Run obj)
@@ -486,12 +476,13 @@ namespace DacityP
                 activehud = Instantiate(hud);
                 if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
                 else Debug.Log("Local network user doesn't exist!");
-                if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
-                else Debug.LogWarning("No DirectorState exists yet.");
-                Debug.Log("UI Instantiated.");
-                HUDEnable();
             }
             currentmaster = null;
+            if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
+            else Debug.LogWarning("No DirectorState exists yet.");
+            Debug.Log("UI Instantiated.");
+            HUDEnable();
+            ChangeNextTarget();
         }
 
         private void ChangeNextTarget()
@@ -506,7 +497,7 @@ namespace DacityP
             int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
             for (int i = num + 1; i < readOnlyInstancesList.Count; i++)
             {
-                if (Util.LookUpBodyNetworkUser(readOnlyInstancesList[i]) || true)
+                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[i].gameObject;
                     return;
@@ -514,7 +505,7 @@ namespace DacityP
             }
             for (int j = 0; j <= num; j++)
             {
-                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j])) || true)
+                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
                     return;
@@ -534,7 +525,7 @@ namespace DacityP
             int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
             for (int i = num - 1; i >= 0; i--)
             {
-                if (Util.LookUpBodyNetworkUser(readOnlyInstancesList[i]) || true)
+                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[i].gameObject;
                     return;
@@ -542,7 +533,7 @@ namespace DacityP
             }
             for (int j = readOnlyInstancesList.Count - 1; j >= num; j--)
             {
-                if ((Util.LookUpBodyNetworkUser(readOnlyInstancesList[j])) || true)
+                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
                     return;
@@ -592,7 +583,8 @@ namespace DacityP
                 if (currentmaster.GetComponent<PlayerStatsComponent>()) Destroy(currentmaster.GetComponent<PlayerStatsComponent>());
                 if (currentcontroller) Destroy(currentcontroller);
                 currentai = null;
-                if (currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
+                Debug.Log("Controller destroyed.");
+                if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
             }
             currentmaster = null;
@@ -678,28 +670,6 @@ namespace DacityP
             {
                 activehud.GetComponent<Canvas>().enabled = true;
             }
-        }
-
-        private void BoostEnable()
-        {
-            foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
-            {
-                CharacterBody body = c.GetBody();
-                if (body && !body.HasBuff(RoR2Content.Buffs.TeamWarCry)) body.AddBuff(RoR2Content.Buffs.TeamWarCry);
-                if (body && !body.HasBuff(RoR2Content.Buffs.PowerBuff)) body.AddBuff(RoR2Content.Buffs.PowerBuff);
-            }
-            boosting = true;
-        }
-
-        private void BoostDisable()
-        {
-            foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
-            {
-                CharacterBody body = c.GetBody();
-                if (body && body.HasBuff(RoR2Content.Buffs.TeamWarCry)) body.RemoveBuff(RoR2Content.Buffs.TeamWarCry);
-                if (body && body.HasBuff(RoR2Content.Buffs.PowerBuff)) body.RemoveBuff(RoR2Content.Buffs.PowerBuff);
-            }
-            boosting = false;
         }
 
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
@@ -795,6 +765,14 @@ namespace DacityP
                 return;
             }
             target.inventory.GiveItem(itemdef);
+        }
+
+        [ConCommand(commandName = "prvd_debug", flags = ConVarFlags.None, helpText = "Toggle PRVD Debug mode, which enables player spawning and targeting of non-player bodies.")]
+        private static void CCToggleDebug(ConCommandArgs args)
+        {
+            debugEnabled = !debugEnabled;
+            Debug.LogFormat("Debug is now {0}", debugEnabled);
+            if (instance) instance.ChangeNextTarget();
         }
     }
 }

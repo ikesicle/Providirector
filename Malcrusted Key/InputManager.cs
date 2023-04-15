@@ -1,6 +1,6 @@
 ﻿using System;
 namespace DacityP;
-
+#pragma warning disable IDE1006 // Naming Styles
 public static class InputManager
 {
     public struct ButtonState
