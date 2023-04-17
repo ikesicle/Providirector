@@ -10,6 +10,7 @@ using ProvidirectorGame;
 using System.Collections.Generic;
 using RoR2.CharacterAI;
 using RoR2.Stats;
+using HarmonyLib;
 
 #pragma warning disable Publicizer001
 
@@ -35,9 +36,10 @@ namespace DacityP
     [BepInPlugin("com.DacityP.Providirector", "Providirector", "0.0.1")]
     public class Providirector : BaseUnityPlugin
     {
-        private static bool modenabled = true;
-        private static bool runIsActive = false;
-        private static bool debugEnabled = false;
+        public static bool modenabled = true;
+        public static bool runIsActive = false;
+        public static bool debugEnabled = false;
+        private static Harmony harmonyinst;
         private static GameObject hud;
         private static GameObject commandPanelPrefab;
         private NetworkUser dirpnuser;
@@ -56,16 +58,17 @@ namespace DacityP
 
         public void Awake()
         {
+            RoR2Application.isModded = true;
+
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
             On.RoR2.Run.Start += Run_Start;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
             On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
             On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
-            On.RoR2.Run.RecalculateDifficultyCoefficentInternal += Run_RecalculateDifficultyCoefficentInternal;
             On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
             On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
-            On.RoR2.BossGroup.DropRewards += BossGroup_DropRewards;
+            On.RoR2.ArenaMissionController.EndRound += ArenaMissionController_EndRound;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
             On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
@@ -77,6 +80,15 @@ namespace DacityP
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
+
+            harmonyinst = new Harmony(Info.Metadata.GUID);
+            harmonyinst.PatchAll(typeof(HarmonyPatches));
+            Debug.Log("Harmony patch OK.");
+        }
+
+        private void ArenaMissionController_EndRound(On.RoR2.ArenaMissionController.orig_EndRound orig, ArenaMissionController self)
+        {
+            orig(self);
         }
 
         void OnEnable()
@@ -122,94 +134,15 @@ namespace DacityP
 
         private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
         {
-            if (modenabled && NetworkServer.active)
+            if (modenabled && NetworkServer.active && (self.participatingPlayerCount > 1 || debugEnabled))
             {
                 runIsActive = true;
-                Run.ambientLevelCap = 1500;
                 Debug.Log("Providirector has been set up for this run!");
                 if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
                 localuser = LocalUserManager.readOnlyLocalUsersList[0];
                 dirpnuser = localuser.currentNetworkUser;
             }
             orig(self);
-        }
-
-        private void BossGroup_DropRewards(On.RoR2.BossGroup.orig_DropRewards orig, BossGroup self)
-        {
-            if (!runIsActive)
-            {
-                orig(self);
-                return;
-            }
-            if (!Run.instance)
-            {
-                Debug.LogError("No valid run instance!");
-                return;
-            }
-            if (self.rng == null)
-            {
-                Debug.LogError("RNG is null!");
-                return;
-            }
-            int participatingPlayerCount = PlayerCharacterMasterController.instances.Count;
-            if (participatingPlayerCount == 0)
-            {
-                return;
-            }
-            if ((bool)self.dropPosition)
-            {
-                PickupIndex none = PickupIndex.none;
-                if ((bool)self.dropTable)
-                {
-                    none = self.dropTable.GenerateDrop(self.rng);
-                }
-                else
-                {
-                    List<PickupIndex> list = Run.instance.availableTier2DropList;
-                    if (self.forceTier3Reward)
-                    {
-                        list = Run.instance.availableTier3DropList;
-                    }
-                    none = self.rng.NextElementUniform(list);
-                }
-                int num = 1 + self.bonusRewardCount;
-                if (self.scaleRewardsByPlayerCount)
-                {
-                    num *= participatingPlayerCount;
-                }
-                float angle = 360f / (float)num;
-                Vector3 vector = Quaternion.AngleAxis(UnityEngine.Random.Range(0, 360), Vector3.up) * (Vector3.up * 40f + Vector3.forward * 5f);
-                Quaternion quaternion = Quaternion.AngleAxis(angle, Vector3.up);
-                bool flag = self.bossDrops != null && self.bossDrops.Count > 0;
-                bool flag2 = self.bossDropTables != null && self.bossDropTables.Count > 0;
-                int num2 = 0;
-                while (num2 < num)
-                {
-                    PickupIndex pickupIndex = none;
-                    if (self.bossDrops != null && (flag || flag2) && self.rng.nextNormalizedFloat <= self.bossDropChance)
-                    {
-                        if (flag2)
-                        {
-                            PickupDropTable pickupDropTable = self.rng.NextElementUniform(self.bossDropTables);
-                            if (pickupDropTable != null)
-                            {
-                                pickupIndex = pickupDropTable.GenerateDrop(self.rng);
-                            }
-                        }
-                        else
-                        {
-                            pickupIndex = self.rng.NextElementUniform(self.bossDrops);
-                        }
-                    }
-                    PickupDropletController.CreatePickupDroplet(pickupIndex, self.dropPosition.position, vector);
-                    num2++;
-                    vector = quaternion * vector;
-                }
-            }
-            else
-            {
-                Debug.LogWarning("dropPosition not set for BossGroup! No item will be spawned.");
-            }
         }
 
         private Action<CharacterMaster> NewPrespawnSetup(On.RoR2.CharacterSpawnCard.orig_GetPreSpawnSetupCallback orig, CharacterSpawnCard self)
@@ -227,34 +160,6 @@ namespace DacityP
                     addPlayerControlToNextSpawnCardSpawn = false;
                 }
             };
-        }
-
-        private void Run_RecalculateDifficultyCoefficentInternal(On.RoR2.Run.orig_RecalculateDifficultyCoefficentInternal orig, Run self)
-        {
-            if (!runIsActive)
-            {
-                orig(self);
-                return;
-            }
-            int ppc = PlayerCharacterMasterController.instances.Count;
-            float num = self.GetRunStopwatch();
-            DifficultyDef difficultyDef = DifficultyCatalog.GetDifficultyDef(self.selectedDifficulty);
-            float num2 = Mathf.Floor(num * (1f / 60f));
-            float num3 = (float)ppc * 0.3f;
-            float num4 = 0.7f + num3;
-            float num5 = 0.7f + num3;
-            float num6 = Mathf.Pow(ppc, 0.2f);
-            float num7 = 0.0506f * difficultyDef.scalingValue * num6;
-            float num8 = 0.0506f * difficultyDef.scalingValue * num6;
-            float num9 = Mathf.Pow(1.15f, self.stageClearCount);
-            self.compensatedDifficultyCoefficient = (num5 + num8 * num2) * num9;
-            self.difficultyCoefficient = (num4 + num7 * num2) * num9;
-            float num10 = (num4 + num7 * (num * (1f / 60f))) * Mathf.Pow(1.15f, self.stageClearCount);
-            self.ambientLevel = Mathf.Min((num10 - num4) / 0.33f + 1f, Run.ambientLevelCap);
-            int num11 = self.ambientLevelFloor;
-            self.ambientLevelFloor = Mathf.FloorToInt(self.ambientLevel);
-            if (num11 != self.ambientLevelFloor && num11 != 0 && self.ambientLevelFloor > num11) self.OnAmbientLevelUp();
-
         }
 
         private void MithrixPlayerControlSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
@@ -284,7 +189,7 @@ namespace DacityP
 
         private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
-            if (!modenabled)
+            if (!runIsActive)
             {
                 orig(self, user);
                 return;
@@ -361,7 +266,6 @@ namespace DacityP
             if (!runIsActive) return;
             dirpnuser = null;
             localuser = null;
-            Run.ambientLevelCap = 99;
             if (activehud) Destroy(activehud);
             activehud = null;
 
@@ -471,12 +375,10 @@ namespace DacityP
         private void SetupSceneChange()
         {
             DirectorState.UpdateMonsterSelection();
-            if (activehud == null)
-            {
-                activehud = Instantiate(hud);
-                if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
-                else Debug.Log("Local network user doesn't exist!");
-            }
+            if (activehud == null) Instantiate(hud);
+
+            if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
+            else Debug.Log("Local network user doesn't exist!");
             currentmaster = null;
             if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
             else Debug.LogWarning("No DirectorState exists yet.");
@@ -773,6 +675,21 @@ namespace DacityP
             debugEnabled = !debugEnabled;
             Debug.LogFormat("Debug is now {0}", debugEnabled);
             if (instance) instance.ChangeNextTarget();
+        }
+
+        [ConCommand(commandName = "prvd_rundata", flags = ConVarFlags.None, helpText = "Check the data of the current run.")]
+        private static void CCRunData(ConCommandArgs args)
+        {
+            if (!Run.instance)
+            {
+                Debug.Log("-- No run data present");
+                return;
+            }
+            Debug.LogFormat("-- {0}", Run.instance.name);
+            Debug.LogFormat("Time: {0}", Run.instance.GetRunStopwatch());
+            Debug.LogFormat("Players: {0}", Run.instance.participatingPlayerCount);
+            Debug.LogFormat("Stages Cleared: {0}", Run.instance.stageClearCount);
+            Debug.LogFormat("Difficulty Level: {0}", Run.instance.difficultyCoefficient);
         }
     }
 }
