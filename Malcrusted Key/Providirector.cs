@@ -1,4 +1,6 @@
 ﻿using BepInEx;
+using BepInEx.Bootstrap;
+using BepInEx.Configuration;
 using RoR2;
 using RoR2.CameraModes;
 using R2API.Utils;
@@ -11,6 +13,9 @@ using System.Collections.Generic;
 using RoR2.CharacterAI;
 using RoR2.Stats;
 using HarmonyLib;
+using RiskOfOptions;
+using RiskOfOptions.OptionConfigs;
+using RiskOfOptions.Options;
 
 #pragma warning disable Publicizer001
 
@@ -33,15 +38,22 @@ namespace DacityP
      */
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
+    [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInPlugin("com.DacityP.Providirector", "Providirector", "0.0.1")]
     public class Providirector : BaseUnityPlugin
     {
-        public static bool modenabled = true;
+        private static ConfigEntry<bool> _modenabled;
+        private static bool _modenabledfallback = true;
+        public static bool modenabled => _modenabled == null ? _modenabledfallback : _modenabled.Value;
+        
+        private static ConfigEntry<bool> _debugenabled;
+        private static bool _debugenabledfallback = false;
+        public static bool debugEnabled => _debugenabled == null ? _debugenabledfallback : _debugenabled.Value;
+
         public static bool runIsActive = false;
-        public static bool debugEnabled = false;
         private static Harmony harmonyinst;
         private static GameObject hud;
-        private static GameObject commandPanelPrefab;
+        //private static GameObject commandPanelPrefab;
         private NetworkUser dirpnuser;
         private LocalUser localuser;
         private GameObject spectatetarget;
@@ -61,6 +73,7 @@ namespace DacityP
             RoR2Application.isModded = true;
 
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
+            Run.onServerGameOver += Run_onServerGameOver;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
             On.RoR2.Run.Start += Run_Start;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
@@ -68,7 +81,6 @@ namespace DacityP
             On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
             On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
             On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
-            On.RoR2.ArenaMissionController.EndRound += ArenaMissionController_EndRound;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
             On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
@@ -83,12 +95,22 @@ namespace DacityP
 
             harmonyinst = new Harmony(Info.Metadata.GUID);
             harmonyinst.PatchAll(typeof(HarmonyPatches));
-            Debug.Log("Harmony patch OK.");
+
+            _modenabled = Config.Bind<bool>("General", "ModEnabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
+            _debugenabled = Config.Bind<bool>("General", "DebugEnabled", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode.");
+            if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
         }
 
-        private void ArenaMissionController_EndRound(On.RoR2.ArenaMissionController.orig_EndRound orig, ArenaMissionController self)
+        private void SetupRiskOfOptions()
         {
-            orig(self);
+            Debug.LogWarning("Setting up Risk of Options for Providirector!");
+            ModSettingsManager.AddOption(new CheckBoxOption(_modenabled));
+            ModSettingsManager.AddOption(new CheckBoxOption(_debugenabled));
+        }
+
+        private void Run_onServerGameOver(Run run, GameEndingDef ending)
+        {
+            Run_onRunDestroyGlobal(run);
         }
 
         void OnEnable()
@@ -125,12 +147,13 @@ namespace DacityP
             if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
         }
 
+        /*
         public void Start()
         {
             PickupPickerController pcp = RoR2.Artifacts.CommandArtifactManager.commandCubePrefab.GetComponent<PickupPickerController>();
             if (pcp) commandPanelPrefab = pcp.panelPrefab;
             else Debug.Log("Unable to retrieve panel prefab.");
-        }
+        }*/
 
         private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
         {
@@ -231,7 +254,7 @@ namespace DacityP
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level2;
             if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
-            if (InputManager.DebugSpawn.justPressed) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
+            if (InputManager.DebugSpawn.justPressed && debugEnabled) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
             if (InputManager.Slot1.justPressed) DirectorState.instance.TrySpawn(0, pos, rot);
@@ -268,7 +291,6 @@ namespace DacityP
             localuser = null;
             if (activehud) Destroy(activehud);
             activehud = null;
-
             runIsActive = false;
         }
 
@@ -375,8 +397,11 @@ namespace DacityP
         private void SetupSceneChange()
         {
             DirectorState.UpdateMonsterSelection();
-            if (activehud == null) Instantiate(hud);
-
+            if (activehud == null)
+            {
+                Instantiate(hud);
+                Debug.LogWarning("Instantiated new hud.");
+            }
             if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
             else Debug.Log("Local network user doesn't exist!");
             currentmaster = null;
@@ -488,6 +513,7 @@ namespace DacityP
                 Debug.Log("Controller destroyed.");
                 if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
+                
             }
             currentmaster = null;
             HUDEnable();
@@ -562,7 +588,7 @@ namespace DacityP
         {
             if (activehud)
             {
-                activehud.GetComponent<Canvas>().enabled = false;
+                activehud.SetActive(false);
             }
         }
 
@@ -570,7 +596,7 @@ namespace DacityP
         {
             if (activehud)
             {
-                activehud.GetComponent<Canvas>().enabled = true;
+                activehud.SetActive(true);
             }
         }
 
@@ -591,25 +617,6 @@ namespace DacityP
                 Debug.Log("In a Cutscene: " + (c.isCutscene ? "Yes" : "No"));
                 i++;
             }
-        }
-
-        [ConCommand(commandName = "toggle_prvd", flags = ConVarFlags.None, helpText = "Toggles enabling of PRVD.")]
-        private static void CCTogglePrvd(ConCommandArgs args)
-        {
-            modenabled = !modenabled;
-            Debug.LogFormat("Providirector enabled set to {0}", modenabled);
-        }
-
-        [ConCommand(commandName = "list_masters", flags = ConVarFlags.None, helpText = "Lists all available masters.")]
-        private static void CCMasterList(ConCommandArgs args)
-        {
-            string output = "";
-            foreach (string master in MasterCatalog.nameToIndexMap.Keys)
-            {
-                output += master;
-                output += "\n";
-            }
-            Debug.Log(output);
         }
 
         [ConCommand(commandName = "prvd_item", flags = ConVarFlags.None, helpText = "Gives an item to a user.")]
@@ -667,14 +674,6 @@ namespace DacityP
                 return;
             }
             target.inventory.GiveItem(itemdef);
-        }
-
-        [ConCommand(commandName = "prvd_debug", flags = ConVarFlags.None, helpText = "Toggle PRVD Debug mode, which enables player spawning and targeting of non-player bodies.")]
-        private static void CCToggleDebug(ConCommandArgs args)
-        {
-            debugEnabled = !debugEnabled;
-            Debug.LogFormat("Debug is now {0}", debugEnabled);
-            if (instance) instance.ChangeNextTarget();
         }
 
         [ConCommand(commandName = "prvd_rundata", flags = ConVarFlags.None, helpText = "Check the data of the current run.")]

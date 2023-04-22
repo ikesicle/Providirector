@@ -29,6 +29,9 @@
     <Reference Include="ScriptsAssembly">
       <HintPath>ScriptsAssembly.dll</HintPath>
     </Reference>
+    <Reference Include="RiskOfOptions">
+      <HintPath>RiskOfOptions.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <None Update="providirectorui">
