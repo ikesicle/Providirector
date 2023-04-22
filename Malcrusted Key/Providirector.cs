@@ -94,7 +94,7 @@ namespace DacityP
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
             icons = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "monstericons"));
-            MonsterIcon.iconBundle = icons;
+            MonsterIcon.AddIconsFromBundle(icons);
 
             harmonyinst = new Harmony(Info.Metadata.GUID);
             harmonyinst.PatchAll(typeof(HarmonyPatches));
