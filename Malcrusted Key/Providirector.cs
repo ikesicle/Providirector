@@ -9,12 +9,10 @@ using System;
 using System.Collections.ObjectModel;
 using UnityEngine.Networking;
 using ProvidirectorGame;
-using System.Collections.Generic;
 using RoR2.CharacterAI;
 using RoR2.Stats;
 using HarmonyLib;
 using RiskOfOptions;
-using RiskOfOptions.OptionConfigs;
 using RiskOfOptions.Options;
 
 #pragma warning disable Publicizer001
