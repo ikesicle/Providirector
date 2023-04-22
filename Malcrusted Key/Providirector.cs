@@ -63,6 +63,7 @@ namespace DacityP
         private CameraRigController maincam => dirpnuser.cameraRigController;
         private BaseAI currentai;
         private AssetBundle assets;
+        private AssetBundle icons;
         private GameObject activehud;
         private bool addPlayerControlToNextSpawnCardSpawn;
 
@@ -92,6 +93,8 @@ namespace DacityP
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
             hud = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
+            icons = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "monstericons"));
+            MonsterIcon.iconBundle = icons;
 
             harmonyinst = new Harmony(Info.Metadata.GUID);
             harmonyinst.PatchAll(typeof(HarmonyPatches));
