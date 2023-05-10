@@ -1,0 +1,10 @@
+﻿{
+  "name": "Providirector",
+  "version_number": "0.1.0",
+  "website_url": "https://github.com/RileSamurott/Providirector",
+  "description": "A server-side mod for Risk of Rain 2 which allows one player to take on the role of one of the combat directors.",
+  "dependencies": [
+    "tristanmcpherson-R2API-5.0.3",
+    "Rune580-Risk_Of_Options-2.5.3"
+  ]
+}

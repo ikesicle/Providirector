@@ -36,7 +36,8 @@ namespace DacityP
      */
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
-    [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.SoftDependency)]
+    // I'll add a more elegant way to enable and disable the mod later, but for now the setting is in modoptions.
+    [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.HardDependency)]
     [BepInPlugin("com.DacityP.Providirector", "Providirector", "0.0.1")]
     public class Providirector : BaseUnityPlugin
     {
@@ -490,6 +491,7 @@ namespace DacityP
             GameObject oldprefab = c.bodyPrefab;
             currentcontroller.LinkToNetworkUserServer(dirpnuser);
             currentcontroller.master.bodyPrefab = oldprefab; // RESET
+            currentmaster.preventGameOver = false;
             HUDDisable();
             currentcontroller.enabled = true;
             playerStatsComponent.enabled = true;
