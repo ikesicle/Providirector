@@ -3,7 +3,7 @@ A funky mod for Risk of Rain 2 which allows you to assume the role of a combat d
 
 Spawn enemies to destroy the survivors, upgrade enemies to stronger Elite variants, and use your Burst buff to keep the survivors on their toes!
 
-This mod is still very underdeveloped, and as such is pretty unbalanced, and is still missing a lot of monster icons and polish. I made this mainly as a joke after playing too much Battle Cats and Risk of Rain 2.
+This mod is still ~~very~~ **HIGHLY** underdeveloped, and as such is pretty unbalanced, and is still missing a lot of monster icons and polish - **and is probably FILLED with bugs and compat issues with other mods**. I made this mainly as a joke after playing too much Battle Cats and Risk of Rain 2.
 
 If you have any suggestions or bug reports for the mod, visit the mod's Github page and create an issue!
 
@@ -21,5 +21,9 @@ These aren't documented very well in the actual game (there's no tutorial or key
 - **B**: Burst. Once your meter is full, use this to temporarily buff all currently spawned enemies.
 
 ## Todo
-- Fix Mithrix boss interaction - Not sure if killing all *regular* players causes a proper Game Over
+# Content
 - Add remaining monster icons for vanilla game and SotV
+# Compatiability Issues
+- Add compatiability with Inferno difficulty - 
+# Bugsplatting
+- 

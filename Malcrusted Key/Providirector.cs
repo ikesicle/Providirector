@@ -57,6 +57,7 @@ namespace DacityP
         private LocalUser localuser;
         private GameObject spectatetarget;
         private CharacterMaster currentmaster;
+        private CharacterMaster defaultmaster;
         private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
         private CharacterBody currentbody => currentmaster.GetBody();
         private CameraRigController maincam => dirpnuser.cameraRigController;
@@ -71,22 +72,9 @@ namespace DacityP
         public void Awake()
         {
             RoR2Application.isModded = true;
-
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             Run.onServerGameOver += Run_onServerGameOver;
-            RoR2Application.onUpdate += RoR2Application_onUpdate;
             On.RoR2.Run.Start += Run_Start;
-            On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
-            On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
-            On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
-            On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
-            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
-            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
-            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter += ActivateBoostPhase2;
-            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += LockOnPhase3;
-            On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter += ActivateFinalBoost;
             R2API.Utils.CommandHelper.AddToConsoleWhenReady();
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
@@ -96,11 +84,52 @@ namespace DacityP
             MonsterIcon.AddIconsFromBundle(icons);
 
             harmonyinst = new Harmony(Info.Metadata.GUID);
-            harmonyinst.PatchAll(typeof(HarmonyPatches));
 
             _modenabled = Config.Bind<bool>("General", "ModEnabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
             _debugenabled = Config.Bind<bool>("General", "DebugEnabled", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode.");
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
+            RunHookSetup();
+        }
+
+        private void RunHookSetup()
+        {
+            RoR2Application.onUpdate += RoR2Application_onUpdate;
+            On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
+            On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
+            On.RoR2.Run.OnUserAdded += Run_OnUserAdded;
+            On.RoR2.Run.BeginGameOver += Run_BeginGameOver;
+            On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
+            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
+            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
+            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter += ActivateBoostPhase2;
+            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += LockOnPhase3;
+            On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter += ActivateFinalBoost;
+            if (harmonyinst != null) harmonyinst.PatchAll(typeof(HarmonyPatches));
+        }
+
+        private void Run_BeginGameOver(On.RoR2.Run.orig_BeginGameOver orig, Run self, GameEndingDef gameEndingDef)
+        {
+            if (debugEnabled && runIsActive) return;
+            orig(self, gameEndingDef);
+        }
+
+        private void RunHookDisengage()
+        {
+            RoR2Application.onUpdate -= RoR2Application_onUpdate;
+            On.RoR2.Run.OnServerSceneChanged -= Run_OnServerSceneChanged;
+            On.RoR2.RunCameraManager.Update -= RunCameraManager_Update;
+            On.RoR2.Run.OnUserAdded -= Run_OnUserAdded;
+            On.RoR2.CombatDirector.Awake -= CombatDirector_Awake;
+            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback -= NewPrespawnSetup;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin -= BrotherEncounterPhaseBaseState_PreEncounterBegin;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer -= MithrixPlayerControlSetup;
+            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter -= LockOnPhase1;
+            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter -= ActivateBoostPhase2;
+            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter -= LockOnPhase3;
+            On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter -= ActivateFinalBoost;
+            if (harmonyinst != null) harmonyinst.UnpatchSelf();
         }
 
         private void SetupRiskOfOptions()
@@ -110,9 +139,32 @@ namespace DacityP
             ModSettingsManager.AddOption(new CheckBoxOption(_debugenabled));
         }
 
+        private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
+        {
+            if (modenabled && NetworkServer.active && (self.participatingPlayerCount > 1 || debugEnabled))
+            {
+                runIsActive = true;
+                Debug.Log("Providirector has been set up for this run!");
+                if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
+                localuser = LocalUserManager.readOnlyLocalUsersList[0];
+                dirpnuser = localuser.currentNetworkUser;
+            }
+            orig(self);
+        }
+
         private void Run_onServerGameOver(Run run, GameEndingDef ending)
         {
             Run_onRunDestroyGlobal(run);
+        }
+
+        private void Run_onRunDestroyGlobal(Run obj)
+        {
+            if (!runIsActive) return;
+            dirpnuser = null;
+            localuser = null;
+            if (activehud) Destroy(activehud);
+            activehud = null;
+            runIsActive = false;
         }
 
         void OnEnable()
@@ -149,27 +201,6 @@ namespace DacityP
             if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
         }
 
-        /*
-        public void Start()
-        {
-            PickupPickerController pcp = RoR2.Artifacts.CommandArtifactManager.commandCubePrefab.GetComponent<PickupPickerController>();
-            if (pcp) commandPanelPrefab = pcp.panelPrefab;
-            else Debug.Log("Unable to retrieve panel prefab.");
-        }*/
-
-        private void Run_Start(On.RoR2.Run.orig_Start orig, Run self)
-        {
-            if (modenabled && NetworkServer.active && (self.participatingPlayerCount > 1 || debugEnabled))
-            {
-                runIsActive = true;
-                Debug.Log("Providirector has been set up for this run!");
-                if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
-                localuser = LocalUserManager.readOnlyLocalUsersList[0];
-                dirpnuser = localuser.currentNetworkUser;
-            }
-            orig(self);
-        }
-
         private Action<CharacterMaster> NewPrespawnSetup(On.RoR2.CharacterSpawnCard.orig_GetPreSpawnSetupCallback orig, CharacterSpawnCard self)
         {
             return (CharacterMaster c) =>
@@ -191,6 +222,7 @@ namespace DacityP
         {
             orig(self, master);
             if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
+            DisengagePlayerControl();
             AddPlayerControl(master);
         }
 
@@ -210,18 +242,6 @@ namespace DacityP
                 Debug.Log("Combat Director credit count reduced.");
             }
             orig(self);
-        }
-
-        private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
-        {
-            if (!runIsActive)
-            {
-                orig(self, user);
-                return;
-            }
-            if (dirpnuser == null) { Debug.Log("PRVD Network user is not set! Defaulting to regular add behaviour"); orig(self, user); return; }
-            if (user != dirpnuser) orig(self, user);
-            else Debug.Log("Player creation was stopped by Providirector.");
         }
 
         private void RoR2Application_onUpdate()
@@ -255,7 +275,7 @@ namespace DacityP
             if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
             if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level2;
             if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
-            if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster) return;
+            if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster != defaultmaster) return;
             if (InputManager.DebugSpawn.justPressed && debugEnabled) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
             if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
@@ -286,14 +306,44 @@ namespace DacityP
             if (InputManager.BoostTarget.justPressed) DirectorState.instance.ApplyFrenzy();
         }
 
-        private void Run_onRunDestroyGlobal(Run obj)
+        private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
-            if (!runIsActive) return;
-            dirpnuser = null;
-            localuser = null;
-            if (activehud) Destroy(activehud);
-            activehud = null;
-            runIsActive = false;
+            orig(self, user);
+            if (!runIsActive || dirpnuser == null || user != dirpnuser) return;
+            // At this point we know that the user being added is the player who will be the director
+            if (!user.master) { Debug.LogWarning("No master found on the spawned player!"); return; }
+            defaultmaster = user.master;
+            defaultmaster.bodyPrefab = BodyCatalog.FindBodyPrefab("WispBody");
+            defaultmaster.godMode = true;
+            defaultmaster.preventGameOver = debugEnabled;
+            defaultmaster.teamIndex = TeamIndex.Neutral;
+            currentmaster = defaultmaster;
+            currentai = null;
+             
+            var bodysetupdel = (CharacterBody body) =>
+            {
+                if (!body)
+                {
+                    Debug.LogWarning("No body object found!");
+                    return;
+                }
+                if (!debugEnabled)
+                {
+                    var colsp = body.GetComponent<SphereCollider>();
+                    if (colsp) colsp.enabled = false;
+                    var colca = body.GetComponent<CapsuleCollider>();
+                    if (colca) colca.enabled = false;
+                    Debug.LogWarning("Colliders Disabled.");
+                }
+                body.AddBuff(RoR2Content.Buffs.Cloak);
+                body.AddBuff(RoR2Content.Buffs.Intangible);
+                body.teamComponent.teamIndex = TeamIndex.Neutral;
+                body.skillLocator.primary = null;
+                body.skillLocator.secondary = null;
+                spectatetarget = body.gameObject;
+                Debug.Log("Setup complete!");
+            };
+            defaultmaster.onBodyStart += bodysetupdel;
         }
 
         private void Run_OnServerSceneChanged(On.RoR2.Run.orig_OnServerSceneChanged orig, Run self, string sceneName)
@@ -345,7 +395,7 @@ namespace DacityP
                         cameraRigController.nextTarget = forceSpectate.target;
                         cameraRigController.cameraMode = CameraModePlayerBasic.spectator;
                     }
-                    else if ((bool)networkUserBodyObject)
+                    else if ((bool)networkUserBodyObject && networkUserBodyObject != defaultmaster.GetBodyObject())
                     {
                         cameraRigController.nextTarget = networkUserBodyObject;
                         cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
@@ -401,12 +451,11 @@ namespace DacityP
             DirectorState.UpdateMonsterSelection();
             if (activehud == null)
             {
-                Instantiate(hud);
+                activehud = Instantiate(hud);
                 Debug.LogWarning("Instantiated new hud.");
             }
             if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
             else Debug.Log("Local network user doesn't exist!");
-            currentmaster = null;
             if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
             else Debug.LogWarning("No DirectorState exists yet.");
             Debug.Log("UI Instantiated.");
@@ -472,8 +521,9 @@ namespace DacityP
 
         private void AddPlayerControl(CharacterMaster c)
         {
-            DisengagePlayerControl();
             Debug.LogFormat("Attempting to take control of CharacterMaster {0}", c.name);
+            if (currentmaster) DisengagePlayerControl();
+            else Debug.Log("No currently set master - we can proceed as normal.");
             currentmaster = c;
             currentai = currentmaster.GetComponent<BaseAI>();
             currentmaster.playerCharacterMasterController = currentmaster.GetComponent<PlayerCharacterMasterController>();
@@ -492,13 +542,18 @@ namespace DacityP
             currentcontroller.LinkToNetworkUserServer(dirpnuser);
             currentcontroller.master.bodyPrefab = oldprefab; // RESET
             currentmaster.preventGameOver = false;
-            HUDDisable();
+            if (c != defaultmaster) HUDDisable();
+            else
+            {
+                HUDEnable();
+                ChangeNextTarget();
+            }
             currentcontroller.enabled = true;
             playerStatsComponent.enabled = true;
             Run.instance.userMasters[dirpnuser.id] = c;
             currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
             AIDisable();
-            currentai.onBodyDiscovered += AIDisable;
+            if (currentai) currentai.onBodyDiscovered += AIDisable;
             GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
         }
 
@@ -508,19 +563,27 @@ namespace DacityP
             if (currentmaster)
             {
                 GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
-                currentai.onBodyDiscovered -= AIDisable;
+                if (currentai) currentai.onBodyDiscovered -= AIDisable;
                 AIEnable();
-                if (currentmaster.GetComponent<PlayerStatsComponent>()) Destroy(currentmaster.GetComponent<PlayerStatsComponent>());
-                if (currentcontroller) Destroy(currentcontroller);
+                if (currentcontroller) currentcontroller.enabled = false;
                 currentai = null;
-                Debug.Log("Controller destroyed.");
+                Debug.Log("Controller disabled.");
                 if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
-                
+                Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
+                var prevmaster = currentmaster;
+                currentmaster = null;
+                if (defaultmaster && prevmaster != defaultmaster)
+                {
+                    Debug.LogFormat("Reverting to default master...");
+                    
+                    AddPlayerControl(defaultmaster);
+                }
+
             }
-            currentmaster = null;
-            HUDEnable();
-            Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
+            
+            
+            
         }
 
         private void AIDisable()
@@ -687,11 +750,22 @@ namespace DacityP
                 Debug.Log("-- No run data present");
                 return;
             }
-            Debug.LogFormat("-- {0}", Run.instance.name);
+            Debug.LogFormat("");
             Debug.LogFormat("Time: {0}", Run.instance.GetRunStopwatch());
             Debug.LogFormat("Players: {0}", Run.instance.participatingPlayerCount);
+            Debug.LogFormat("PCMC Instances: {0}", PlayerCharacterMasterController.instances.Count);
             Debug.LogFormat("Stages Cleared: {0}", Run.instance.stageClearCount);
             Debug.LogFormat("Difficulty Level: {0}", Run.instance.difficultyCoefficient);
+        }
+
+        [ConCommand(commandName = "prvd_dump", flags = ConVarFlags.None, helpText = "Dumps director data.")]
+        private static void CCDumpVars(ConCommandArgs args)
+        {
+            Debug.Log("Providirector Data ---");
+            Debug.LogFormat("Mod Enabled: {0} {1}", modenabled, debugEnabled ? "Debug" : "Normal");
+            Debug.LogFormat("Active Run: ", runIsActive);
+            Debug.LogFormat("Director CMaster: {0}", instance.currentmaster);
+            Debug.LogFormat("SpectateTarget: {0}", instance.spectatetarget);
         }
     }
 }
