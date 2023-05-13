@@ -86,7 +86,7 @@ namespace DacityP
             harmonyinst = new Harmony(Info.Metadata.GUID);
 
             _modenabled = Config.Bind<bool>("General", "ModEnabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
-            _debugenabled = Config.Bind<bool>("General", "DebugEnabled", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode.");
+            _debugenabled = Config.Bind<bool>("General", "DebugEnabled", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON IN MULTIPLAYER!");
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
             RunHookSetup();
         }
@@ -319,7 +319,6 @@ namespace DacityP
             defaultmaster.teamIndex = TeamIndex.Neutral;
             currentmaster = defaultmaster;
             currentai = null;
-             
             var bodysetupdel = (CharacterBody body) =>
             {
                 if (!body)
