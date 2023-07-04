@@ -14,7 +14,8 @@ namespace DacityP
         [HarmonyPostfix, HarmonyPatch(typeof(Run), nameof(Run.participatingPlayerCount))]
         public static void ParticipatingPlayerCountOverride(ref int __result)
         {
-            if (Providirector.runIsActive && !Providirector.debugEnabled) __result = Math.Max(0, __result-1);
+            if (!Providirector.runIsActive) return;
+            __result = Math.Max(1, __result - Providirector.instance.extrachars);
         }
     }
 }

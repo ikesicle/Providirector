@@ -50,6 +50,17 @@ namespace DacityP
         private GameObject spectatetarget;
         private CharacterMaster currentmaster;
         private CharacterMaster defaultmaster;
+
+        public int extrachars
+        {
+            get
+            {
+                if (defaultmaster) return 1;
+                if (currentmaster && currentmaster != defaultmaster) return 2;
+                return 0;
+            }
+        }
+
         private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
         private CharacterBody currentbody => currentmaster.GetBody();
         private CameraRigController maincam => dirpnuser.cameraRigController;
@@ -116,7 +127,7 @@ namespace DacityP
         {
             if (debugEnabled && runIsActive)
             {
-                //Debug.LogWarning("Game Over prevented by Providirector's Debug Mode. To turn this off, ask the server host to disable the Providirector debug mode in mod settings.");
+                Debug.LogWarning("Game Over prevented by Providirector's Debug Mode. To turn this off, ask the server host to disable the Providirector debug mode in mod settings.");
                 return;
             }
             orig(self, gameEndingDef);
@@ -237,6 +248,17 @@ namespace DacityP
         {
             if (!runIsActive) return;
             if (dirpnuser == null) return;
+
+            // Purely meant for figuring out how to get game over screen
+            /*
+            string text = "============\n";
+            foreach (PlayerCharacterMasterController pcmc in PlayerCharacterMasterController.instances)
+            {
+                text += string.Format("{0}: {1}\n", pcmc.master, pcmc.preventGameOver);
+            }
+            
+            Debug.Log(text);
+            */
             InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
             InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
             InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
@@ -310,7 +332,7 @@ namespace DacityP
             defaultmaster = user.master;
             defaultmaster.bodyPrefab = BodyCatalog.FindBodyPrefab("WispBody");
             defaultmaster.godMode = true;
-            defaultmaster.preventGameOver = debugEnabled;
+            
             defaultmaster.teamIndex = TeamIndex.Neutral;
             currentmaster = defaultmaster;
             currentai = null;
@@ -337,7 +359,8 @@ namespace DacityP
                 body.skillLocator.secondary = null;
                 body.skillLocator.utility = null;
                 body.skillLocator.special = null;
-                spectatetarget = body.gameObject;
+                body.master.preventGameOver = false;
+                ChangeNextTarget();
                 Debug.Log("Setup complete!");
             };
             defaultmaster.onBodyStart += bodysetupdel;
@@ -481,7 +504,7 @@ namespace DacityP
         private void SetBaseUIVisible(bool value)
         {
             Transform root = maincam.hud.mainContainer.transform;
-            Transform basicstats = root.Find("MainUIArea/SpringCanvas/BottomLeftCluster");
+            Transform basicstats = root.Find("MainUIArea/SpringCanvas/BottomLeftCluster/BarRoots");
             Transform skillicons = root.Find("MainUIArea/SpringCanvas/BottomRightCluster");
             Transform notifs = root.Find("NotificationArea");
             Transform spectateinfo = root.Find("MainUIArea/SpringCanvas/BottomCenterCluster");
@@ -494,11 +517,7 @@ namespace DacityP
         private void ChangeNextTarget()
         {
             ReadOnlyCollection<CharacterBody> readOnlyInstancesList = CharacterBody.readOnlyInstancesList;
-            if (readOnlyInstancesList.Count == 0)
-            {
-                spectatetarget = null;
-                return;
-            }
+            if (readOnlyInstancesList.Count == 0) return;
             CharacterBody characterBody = spectatetarget ? spectatetarget.GetComponent<CharacterBody>() : null;
             int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
             for (int i = num + 1; i < readOnlyInstancesList.Count; i++)
@@ -602,6 +621,9 @@ namespace DacityP
             AIDisable();
             if (currentai) currentai.onBodyDiscovered += AIDisable;
             GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
+            currentmaster.onBodyStart += delegate(CharacterBody b) {
+                b.master.preventGameOver = false;
+            };
             SetBaseUIVisible(c != defaultmaster);
             if (c == defaultmaster) ChangeNextTarget();
             Debug.LogFormat("{0} set as new master.", currentmaster);
