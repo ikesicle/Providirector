@@ -20,10 +20,13 @@ These aren't documented very well in the actual game (there's no tutorial or key
 - **F**: Tap to direct all spawned enemies to attack the target you're currently spectating.
 - **B**: Burst. Once your meter is full, use this to temporarily buff all currently spawned enemies.
 
-## Todo
-# Content
-- Add remaining monster icons for vanilla game and SotV
-# Compatiability Issues
-- Add compatiability with Inferno difficulty - 
-# Bugsplatting
-- 
+## Compatiability With Other Mods
+This is a catalogue of compat tests with other major mods on the Thunderstore mod browser.
+- **A**: Fully compatiable with no major issues
+- **B**: Compatiable with minor or infrequent bugs which only happen under specific circumstances
+- **C**: Somewhat compatiable, with frequent minor bugs or rare major ones which result in crashes or other unintended behavior.
+- **D**: Barely compatiable, with frequent major bugs which make it difficult to play the game normally
+- **NT**: Not tested
+| Mod Name | Author | Tested Version | Type | Compatiability | Notes
+| --- | --- | --- | --- | --- | --- |
+| Inferno | 1.6.1

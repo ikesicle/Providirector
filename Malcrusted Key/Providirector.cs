@@ -11,26 +11,18 @@ using UnityEngine.Networking;
 using ProvidirectorGame;
 using RoR2.CharacterAI;
 using RoR2.Stats;
+using RoR2.UI;
 using HarmonyLib;
 using RiskOfOptions;
 using RiskOfOptions.Options;
+using TMPro;
+using System.Xml.Linq;
 
 #pragma warning disable Publicizer001
 
 namespace DacityP
 {
     /*
-     * Objectives for the Mod:
-     * 1. Allow for a player (the host) to join the game while having no hitbox or kinematic body, preferably by setting User Network State.
-     *     - We change the user's 
-     *    
-     * 1a. Alternatively, maybe we program a special survivor which has no body and a versatile camera? That would be really jank, though.
-     * 2. Figure out how to have the camera for that "player" lock onto entities in the game world (in the future, this will be players)
-     * 3. Allow for the "Player" to spawn in monsters at the specified location
-     *     - The actual directors do this by calling GameObject gameObject = DirectorCore.instance.TrySpawnObject(DirectorSpawnRequest);
-     *     - However, we can get away with directly copying the Spawn method found in the SpawnCard implementation.
-     * 
-     * Bookmarked Methods:
      * PregameController - Controls Pregame actions, including char select
      * CharacterSelectController - Controls Character Selection screen
      */
@@ -53,8 +45,8 @@ namespace DacityP
         private static Harmony harmonyinst;
         private static GameObject hud;
         //private static GameObject commandPanelPrefab;
-        private NetworkUser dirpnuser;
-        private LocalUser localuser;
+        private LocalUser localuser => LocalUserManager.readOnlyLocalUsersList[0];
+        private NetworkUser dirpnuser => localuser.currentNetworkUser;
         private GameObject spectatetarget;
         private CharacterMaster currentmaster;
         private CharacterMaster defaultmaster;
@@ -65,9 +57,15 @@ namespace DacityP
         private AssetBundle assets;
         private AssetBundle icons;
         private GameObject activehud;
+        private HealthBar targethb;
+        private TextMeshProUGUI spnamelabel;
+
         private bool addPlayerControlToNextSpawnCardSpawn;
 
         public static Providirector instance;
+
+        // Compat
+        private PluginInfo umbralMithrix;
 
         public void Awake()
         {
@@ -75,7 +73,7 @@ namespace DacityP
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             Run.onServerGameOver += Run_onServerGameOver;
             On.RoR2.Run.Start += Run_Start;
-            R2API.Utils.CommandHelper.AddToConsoleWhenReady();
+            CommandHelper.AddToConsoleWhenReady();
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorui"));
@@ -85,10 +83,15 @@ namespace DacityP
 
             harmonyinst = new Harmony(Info.Metadata.GUID);
 
-            _modenabled = Config.Bind<bool>("General", "ModEnabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
-            _debugenabled = Config.Bind<bool>("General", "DebugEnabled", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON IN MULTIPLAYER!");
+            _modenabled = Config.Bind<bool>("General", "Mod Enabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
+            _debugenabled = Config.Bind<bool>("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON IN MULTIPLAYER!");
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
             RunHookSetup();
+        }
+
+        public void Start()
+        {
+            if (Chainloader.PluginInfos.TryGetValue("com.Nuxlar.UmbralMithrix", out var _umbralMithrix)) umbralMithrix = _umbralMithrix;
         }
 
         private void RunHookSetup()
@@ -111,25 +114,12 @@ namespace DacityP
 
         private void Run_BeginGameOver(On.RoR2.Run.orig_BeginGameOver orig, Run self, GameEndingDef gameEndingDef)
         {
-            if (debugEnabled && runIsActive) return;
+            if (debugEnabled && runIsActive)
+            {
+                //Debug.LogWarning("Game Over prevented by Providirector's Debug Mode. To turn this off, ask the server host to disable the Providirector debug mode in mod settings.");
+                return;
+            }
             orig(self, gameEndingDef);
-        }
-
-        private void RunHookDisengage()
-        {
-            RoR2Application.onUpdate -= RoR2Application_onUpdate;
-            On.RoR2.Run.OnServerSceneChanged -= Run_OnServerSceneChanged;
-            On.RoR2.RunCameraManager.Update -= RunCameraManager_Update;
-            On.RoR2.Run.OnUserAdded -= Run_OnUserAdded;
-            On.RoR2.CombatDirector.Awake -= CombatDirector_Awake;
-            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback -= NewPrespawnSetup;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin -= BrotherEncounterPhaseBaseState_PreEncounterBegin;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer -= MithrixPlayerControlSetup;
-            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter -= LockOnPhase1;
-            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter -= ActivateBoostPhase2;
-            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter -= LockOnPhase3;
-            On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter -= ActivateFinalBoost;
-            if (harmonyinst != null) harmonyinst.UnpatchSelf();
         }
 
         private void SetupRiskOfOptions()
@@ -146,8 +136,6 @@ namespace DacityP
                 runIsActive = true;
                 Debug.Log("Providirector has been set up for this run!");
                 if (LocalUserManager.readOnlyLocalUsersList == null) { Debug.Log("No local users! Something is terribly wrong."); return; }
-                localuser = LocalUserManager.readOnlyLocalUsersList[0];
-                dirpnuser = localuser.currentNetworkUser;
             }
             orig(self);
         }
@@ -159,12 +147,12 @@ namespace DacityP
 
         private void Run_onRunDestroyGlobal(Run obj)
         {
-            if (!runIsActive) return;
-            dirpnuser = null;
-            localuser = null;
             if (activehud) Destroy(activehud);
             activehud = null;
             runIsActive = false;
+            spectatetarget = null;
+            currentmaster = null;
+            defaultmaster = null;
         }
 
         void OnEnable()
@@ -192,7 +180,11 @@ namespace DacityP
         private void ActivateBoostPhase2(On.EntityStates.Missions.BrotherEncounter.Phase2.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase2 self)
         {
             orig(self);
-            if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
+            if (DirectorState.instance)
+            {
+                if (umbralMithrix != null) DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
+                else DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
+            }
         }
 
         private void LockOnPhase1(On.EntityStates.Missions.BrotherEncounter.Phase1.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase1 self)
@@ -221,16 +213,14 @@ namespace DacityP
         private void MithrixPlayerControlSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
         {
             orig(self, master);
-            if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
-            DisengagePlayerControl();
+            if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive) return;
             AddPlayerControl(master);
         }
 
         private void BrotherEncounterPhaseBaseState_PreEncounterBegin(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_PreEncounterBegin orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self)
         {
             orig(self);
-            if (self.phaseControllerChildString == "Phase2" || !runIsActive) return;
-            Debug.LogFormat("Pre-encounter called for object on phase {0}", self.phaseControllerChildString);
+            if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive) return;
             addPlayerControlToNextSpawnCardSpawn = true;
         }
 
@@ -239,7 +229,6 @@ namespace DacityP
             if (runIsActive)
             {
                 self.creditMultiplier *= 0.5f;
-                Debug.Log("Combat Director credit count reduced.");
             }
             orig(self);
         }
@@ -309,9 +298,15 @@ namespace DacityP
         private void Run_OnUserAdded(On.RoR2.Run.orig_OnUserAdded orig, Run self, NetworkUser user)
         {
             orig(self, user);
-            if (!runIsActive || dirpnuser == null || user != dirpnuser) return;
-            // At this point we know that the user being added is the player who will be the director
             if (!user.master) { Debug.LogWarning("No master found on the spawned player!"); return; }
+            if (!runIsActive) return;
+            else if (user != dirpnuser)
+            {
+                if (user) spectatetarget = user.master.GetBodyObject();
+                return;
+            }
+                // At this point we know that the user being added is the player who will be the director
+
             defaultmaster = user.master;
             defaultmaster.bodyPrefab = BodyCatalog.FindBodyPrefab("WispBody");
             defaultmaster.godMode = true;
@@ -326,19 +321,22 @@ namespace DacityP
                     Debug.LogWarning("No body object found!");
                     return;
                 }
+                
+                Debug.LogWarning("Colliders Disabled.");
+                body.AddBuff(RoR2Content.Buffs.Cloak);
                 if (!debugEnabled)
                 {
+                    body.AddBuff(RoR2Content.Buffs.Intangible);
                     var colsp = body.GetComponent<SphereCollider>();
                     if (colsp) colsp.enabled = false;
                     var colca = body.GetComponent<CapsuleCollider>();
                     if (colca) colca.enabled = false;
-                    Debug.LogWarning("Colliders Disabled.");
                 }
-                body.AddBuff(RoR2Content.Buffs.Cloak);
-                body.AddBuff(RoR2Content.Buffs.Intangible);
                 body.teamComponent.teamIndex = TeamIndex.Neutral;
                 body.skillLocator.primary = null;
                 body.skillLocator.secondary = null;
+                body.skillLocator.utility = null;
+                body.skillLocator.special = null;
                 spectatetarget = body.gameObject;
                 Debug.Log("Setup complete!");
             };
@@ -351,11 +349,16 @@ namespace DacityP
             //if (sceneName == "moon2") viewingOverride = moon2FightActivate;
             //else if (sceneName == "moon") viewingOverride = moonFightActivate;
             //else viewingOverride = Vector3.zero;
-            if (runIsActive) Invoke("SetupSceneChange", 1f);
+            if (runIsActive) SetupSceneChange();
         }
 
         private void RunCameraManager_Update(On.RoR2.RunCameraManager.orig_Update orig, RunCameraManager self)
         {
+            if (!runIsActive)
+            {
+                orig(self);
+                return;
+            }
             // Copied code with a single exception implemented for the new player
             bool flag = Stage.instance;
             CameraRigController[] cameras = self.cameras;
@@ -394,7 +397,7 @@ namespace DacityP
                         cameraRigController.nextTarget = forceSpectate.target;
                         cameraRigController.cameraMode = CameraModePlayerBasic.spectator;
                     }
-                    else if ((bool)networkUserBodyObject && networkUserBodyObject != defaultmaster.GetBodyObject())
+                    else if ((bool)networkUserBodyObject && defaultmaster != null && networkUserBodyObject != defaultmaster.GetBodyObject())
                     {
                         cameraRigController.nextTarget = networkUserBodyObject;
                         cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
@@ -453,13 +456,39 @@ namespace DacityP
                 activehud = Instantiate(hud);
                 Debug.LogWarning("Instantiated new hud.");
             }
-            if (dirpnuser) activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
-            else Debug.Log("Local network user doesn't exist!");
-            if (DirectorState.instance) DirectorState.instance.RefreshForNewStage();
+            Invoke("PostStart", 0.3f);
+        }
+
+        private void PostStart()
+        {
+            DisengagePlayerControl();
+            Debug.Log("Starting post-init");
+            activehud.GetComponent<Canvas>().worldCamera = maincam.uiCam;
+            Debug.Log("Camera set.");
+            if (DirectorState.instance != null) DirectorState.instance.RefreshForNewStage();
             else Debug.LogWarning("No DirectorState exists yet.");
             Debug.Log("UI Instantiated.");
-            HUDEnable();
+            
+            ChildLocator t = activehud.GetComponent<ChildLocator>();
+            targethb = t.FindChild(0).GetComponent<HealthBar>();
+            spnamelabel = t.FindChild(1).GetComponent<TextMeshProUGUI>();
             ChangeNextTarget();
+            HUDEnable();
+            SetBaseUIVisible(false);
+            
+        }
+
+        private void SetBaseUIVisible(bool value)
+        {
+            Transform root = maincam.hud.mainContainer.transform;
+            Transform basicstats = root.Find("MainUIArea/SpringCanvas/BottomLeftCluster");
+            Transform skillicons = root.Find("MainUIArea/SpringCanvas/BottomRightCluster");
+            Transform notifs = root.Find("NotificationArea");
+            Transform spectateinfo = root.Find("MainUIArea/SpringCanvas/BottomCenterCluster");
+            if (basicstats) basicstats.gameObject.SetActive(value);
+            if (skillicons) skillicons.gameObject.SetActive(value);
+            if (notifs) notifs.gameObject.SetActive(value);
+            if (spectateinfo) spectateinfo.gameObject.SetActive(value);
         }
 
         private void ChangeNextTarget()
@@ -477,6 +506,8 @@ namespace DacityP
                 if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[i].gameObject;
+                    //Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
+                    UpdateHUD();
                     return;
                 }
             }
@@ -485,6 +516,8 @@ namespace DacityP
                 if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
+                    //Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
+                    UpdateHUD();
                     return;
                 }
             }
@@ -505,6 +538,8 @@ namespace DacityP
                 if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[i].gameObject;
+                    //Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
+                    UpdateHUD();
                     return;
                 }
             }
@@ -513,15 +548,28 @@ namespace DacityP
                 if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || debugEnabled)
                 {
                     spectatetarget = readOnlyInstancesList[j].gameObject;
+                    //Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
+                    UpdateHUD();
                     return;
                 }
             }
         }
 
+        private void UpdateHUD()
+        {
+            if (spectatetarget && targethb) targethb.source = spectatetarget.GetComponent<HealthComponent>();
+            if (spectatetarget && spnamelabel) spnamelabel.text = Util.GetBestBodyName(spectatetarget);
+        }
+
         private void AddPlayerControl(CharacterMaster c)
         {
+            if (c == null || c == currentmaster)
+            {
+                Debug.LogWarning("Attempt to switch control onto a nonexistent or already present character!");
+                return;
+            }
             Debug.LogFormat("Attempting to take control of CharacterMaster {0}", c.name);
-            if (currentmaster) DisengagePlayerControl();
+            if (currentmaster) DisengagePlayerControl(revertfallback: false);
             else Debug.Log("No currently set master - we can proceed as normal.");
             currentmaster = c;
             currentai = currentmaster.GetComponent<BaseAI>();
@@ -554,35 +602,34 @@ namespace DacityP
             AIDisable();
             if (currentai) currentai.onBodyDiscovered += AIDisable;
             GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
+            SetBaseUIVisible(c != defaultmaster);
+            if (c == defaultmaster) ChangeNextTarget();
+            Debug.LogFormat("{0} set as new master.", currentmaster);
         }
 
-        private void DisengagePlayerControl()
+        private void DisengagePlayerControl(bool revertfallback = true)
         {
-            Debug.Log("Deactivating...");
-            if (currentmaster)
+            Debug.LogFormat("Disengaging player control from {0}...", currentmaster);
+            if (currentmaster && currentmaster != defaultmaster)
             {
                 GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
                 if (currentai) currentai.onBodyDiscovered -= AIDisable;
                 AIEnable();
                 if (currentcontroller) currentcontroller.enabled = false;
                 currentai = null;
-                Debug.Log("Controller disabled.");
+                //Debug.Log("Controller disabled.");
                 if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
                 currentmaster.playerCharacterMasterController = null;
                 Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
                 var prevmaster = currentmaster;
                 currentmaster = null;
-                if (defaultmaster && prevmaster != defaultmaster)
-                {
-                    Debug.LogFormat("Reverting to default master...");
-                    
-                    AddPlayerControl(defaultmaster);
-                }
-
             }
-            
-            
-            
+            //Debug.Log("Deactivated.");
+            if ((currentmaster == null) && revertfallback)
+            {
+                Debug.Log("Reverting to default master...");
+                AddPlayerControl(defaultmaster);
+            }
         }
 
         private void AIDisable()
@@ -591,11 +638,11 @@ namespace DacityP
             {
                 if (currentbody) currentai.OnBodyLost(currentbody);
                 currentai.enabled = false;
-                Debug.Log("AI Disabled.");
+                //Debug.Log("AI Disabled.");
             }
             else
             {
-                Debug.Log("It doesn't have an AI!");
+                //Debug.Log("It doesn't have an AI!");
             }
         }
 
@@ -607,7 +654,7 @@ namespace DacityP
             {
                 currentai.enabled = true;
                 if (currentbody) currentai.OnBodyStart(currentbody);
-                Debug.Log("AI Enabled.");
+                //Debug.Log("AI Enabled.");
             }
         }
 
@@ -754,7 +801,8 @@ namespace DacityP
             Debug.LogFormat("Players: {0}", Run.instance.participatingPlayerCount);
             Debug.LogFormat("PCMC Instances: {0}", PlayerCharacterMasterController.instances.Count);
             Debug.LogFormat("Stages Cleared: {0}", Run.instance.stageClearCount);
-            Debug.LogFormat("Difficulty Level: {0}", Run.instance.difficultyCoefficient);
+            Debug.LogFormat("Difficulty Scaling: {0}", Run.instance.difficultyCoefficient);
+            Debug.LogFormat("Difficulty Level: {0}", Run.instance.ambientLevel);
         }
 
         [ConCommand(commandName = "prvd_dump", flags = ConVarFlags.None, helpText = "Dumps director data.")]
@@ -764,7 +812,18 @@ namespace DacityP
             Debug.LogFormat("Mod Enabled: {0} {1}", modenabled, debugEnabled ? "Debug" : "Normal");
             Debug.LogFormat("Active Run: ", runIsActive);
             Debug.LogFormat("Director CMaster: {0}", instance.currentmaster);
+            Debug.LogFormat("Director DMaster: {0}", instance.defaultmaster);
             Debug.LogFormat("SpectateTarget: {0}", instance.spectatetarget);
+        }
+
+        [ConCommand(commandName = "prvd_players", flags = ConVarFlags.None, helpText = "Dumps player data.")]
+        private static void CCDumpPlayer(ConCommandArgs args)
+        {
+            Debug.Log("Player Data ---");
+            foreach (PlayerCharacterMasterController pcmc in PlayerCharacterMasterController.instances)
+            {
+                Debug.LogFormat("{0}: {1}", pcmc.GetDisplayName(), pcmc.preventGameOver);
+            }
         }
     }
 }
