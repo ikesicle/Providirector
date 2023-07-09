@@ -3,11 +3,11 @@ A funky mod for Risk of Rain 2 which allows you to assume the role of a combat d
 
 Spawn enemies to destroy the survivors, upgrade enemies to stronger Elite variants, and use your Burst buff to keep the survivors on their toes!
 
-This mod is still ~~very~~ **HIGHLY** underdeveloped, and as such is pretty unbalanced, and is still missing a lot of monster icons and polish - **and is probably FILLED with bugs and compat issues with other mods**. I made this mainly as a joke after playing too much Battle Cats and Risk of Rain 2.
+This mod is still very underdeveloped, and as such is pretty unbalanced, and is still missing a lot of monster icons and polish - **and is FILLED with bugs and compat issues with other mods**. I made this mainly as a joke after playing too much Battle Cats and Risk of Rain 2.
 
 The mod is server-side, which means that only the host of the game needs to have the mod installed and enabled. Other clients can even run vanilla and still play, provided that no content mods are enabled.
 
-If you have any suggestions or bug reports for the mod, visit the mod's Github page and create an issue!
+If you have any suggestions or bug reports for the mod, visit the mod's Github page and create an issue! Alternatively, you can shoot me a DM on Discord; my username is `ikesicle`.
 
 ## Controls
 These aren't documented very well in the actual game (there's no tutorial or keybind screen yet) so here are the controls for the Director player.
@@ -23,14 +23,5 @@ These aren't documented very well in the actual game (there's no tutorial or key
 - **B**: Burst. Once your meter is full, use this to temporarily buff all currently spawned enemies.
 
 ## Compatiability With Other Mods
-This is a catalogue of tests that I plan on doing with other mods.
-- **A**: Fully compatiable with no major issues
-- **B**: Compatiable with minor or infrequent bugs which only happen under specific circumstances
-- **C**: Somewhat compatiable, with frequent minor bugs or rare major ones which result in crashes or other unintended behavior.
-- **D**: Barely compatiable, with frequent major bugs which make it difficult to play the game normally
-- **NT**: Not tested
-| Mod Name | Author | Tested Version | Type | Compatiability | Notes
-| --- | --- | --- | --- | --- | --- |
-| UmbralMithrix | Nuxlar | 2.0.2 | Gamemode | C | Bonfire, Practice incompatiability; Regular works fine, I think? |
-| Starstorm 2 | TeamMoonstorm | 0.4.5 | Content Pack | NT | |
-| Inferno | HIFU | 0.
+This is a catalogue of known compatiability issues at the moment. If you're experiencing specific issues with a mod, create an issue or shoot me a DM on Discord. My username is `ikesicle`.
+- **Nuxlar**'s **Umbral Mithrix**: Bonfire and Practice Mode are completely broken. Everything else works well enough, I think.

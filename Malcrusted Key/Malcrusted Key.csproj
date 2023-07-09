@@ -13,6 +13,10 @@
     <AssemblyName>Providirector</AssemblyName>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="ProvidirectorHUD.dll" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepInEx.Analyzers" Version="1.0.*">
       <PrivateAssets>all</PrivateAssets>
@@ -26,18 +30,36 @@
     <PackageReference Include="BepInEx.Core" Version="5.4.21" />
   </ItemGroup>
   <ItemGroup>
-    <Reference Include="ProvidirectorHUD">
-      <HintPath>ProvidirectorHUD.dll</HintPath>
-    </Reference>
     <Reference Include="RiskOfOptions">
       <HintPath>RiskOfOptions.dll</HintPath>
     </Reference>
+    <Reference Include="ScriptsAssembly">
+      <HintPath>ScriptsAssembly.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Resource Include="ProvidirectorHUD.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="CHANGELOG.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="monstericons">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="providirectorui">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="RiskOfOptions.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="ScriptsAssembly.dll">

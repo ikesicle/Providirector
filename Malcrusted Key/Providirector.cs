@@ -17,6 +17,7 @@ using RiskOfOptions;
 using RiskOfOptions.Options;
 using TMPro;
 using System.Xml.Linq;
+using KinematicCharacterController;
 
 #pragma warning disable Publicizer001
 
@@ -51,18 +52,15 @@ namespace DacityP
         private CharacterMaster currentmaster;
         private CharacterMaster defaultmaster;
 
-        public int extrachars
+        private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
+        private CharacterBody currentbody
         {
             get
             {
-                if (defaultmaster) return 1;
-                if (currentmaster && currentmaster != defaultmaster) return 2;
-                return 0;
+                if (currentmaster) currentmaster.GetBody();
+                return null;
             }
         }
-
-        private PlayerCharacterMasterController currentcontroller => currentmaster?.playerCharacterMasterController;
-        private CharacterBody currentbody => currentmaster.GetBody();
         private CameraRigController maincam => dirpnuser.cameraRigController;
         private BaseAI currentai;
         private AssetBundle assets;
@@ -71,7 +69,19 @@ namespace DacityP
         private HealthBar targethb;
         private TextMeshProUGUI spnamelabel;
 
-        private bool addPlayerControlToNextSpawnCardSpawn;
+        private bool _addPlayerControlToNextSpawnCardSpawn;
+        private bool voidlingSpecial;
+        public bool addPlayerControlToNextSpawnCardSpawn
+        {
+            get
+            {
+                return _addPlayerControlToNextSpawnCardSpawn || voidlingSpecial;
+            }
+            set
+            {
+                _addPlayerControlToNextSpawnCardSpawn = value;
+            }
+        }
 
         public static Providirector instance;
 
@@ -95,7 +105,7 @@ namespace DacityP
             harmonyinst = new Harmony(Info.Metadata.GUID);
 
             _modenabled = Config.Bind<bool>("General", "Mod Enabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
-            _debugenabled = Config.Bind<bool>("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON IN MULTIPLAYER!");
+            _debugenabled = Config.Bind<bool>("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON DURING REGULAR GAMEPLAY!\nTHIS MODE PREVENTS GAME OVERS AND IS PRONE TO SOFTLOCKS.");
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
             RunHookSetup();
         }
@@ -114,8 +124,11 @@ namespace DacityP
             On.RoR2.Run.BeginGameOver += Run_BeginGameOver;
             On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
             On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
+            On.RoR2.MapZone.TeleportBody += MapZone_TeleportBody;
+            On.RoR2.VoidRaidGauntletController.Start += VoidRaidGauntletController_Start;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
+            On.EntityStates.Missions.BrotherEncounter.PreEncounter.OnEnter += PreEncounterCollisionDisable;
             On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += LockOnPhase1;
             On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter += ActivateBoostPhase2;
             On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += LockOnPhase3;
@@ -123,11 +136,49 @@ namespace DacityP
             if (harmonyinst != null) harmonyinst.PatchAll(typeof(HarmonyPatches));
         }
 
+        private void VoidRaidGauntletController_Start(On.RoR2.VoidRaidGauntletController.orig_Start orig, VoidRaidGauntletController self)
+        {
+            orig(self);
+            if (runIsActive)
+            {
+                voidlingSpecial = true;
+                foreach (ScriptedCombatEncounter sce in self.phaseEncounters) sce.combatSquad.onMemberAddedServer += delegate (CharacterMaster c)
+                {
+                    if (defaultmaster)
+                    {
+                        Debug.Log("Successfully found the director master!");
+                        defaultmaster.GetBodyObject().layer = LayerIndex.noCollision.intVal;
+                    }
+                    AddPlayerControl(c);
+                    c.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
+                };
+                Debug.Log("Voidling Special setup complete!");
+            }
+        }
+
+        private void PreEncounterCollisionDisable(On.EntityStates.Missions.BrotherEncounter.PreEncounter.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.PreEncounter self)
+        {
+            orig(self);
+            if (runIsActive && defaultmaster && defaultmaster.GetBodyObject()) defaultmaster.GetBodyObject().layer = LayerIndex.noCollision.intVal;
+            else Debug.LogError("Unable to find the default master for the director!");
+        }
+
+        private void MapZone_TeleportBody(On.RoR2.MapZone.orig_TeleportBody orig, MapZone self, CharacterBody characterBody)
+        {
+            // Special exception
+            if (characterBody == defaultmaster.GetBody())
+            {
+                Debug.LogWarning("In-zone TP cancelled for the director.");
+                return;
+            }
+            orig(self, characterBody);
+        }
+
         private void Run_BeginGameOver(On.RoR2.Run.orig_BeginGameOver orig, Run self, GameEndingDef gameEndingDef)
         {
             if (debugEnabled && runIsActive)
             {
-                Debug.LogWarning("Game Over prevented by Providirector's Debug Mode. To turn this off, ask the server host to disable the Providirector debug mode in mod settings.");
+                //Debug.LogWarning("Game Over prevented by Providirector's Debug Mode. To turn this off, ask the server host to disable the Providirector debug mode in mod settings.");
                 return;
             }
             orig(self, gameEndingDef);
@@ -164,6 +215,8 @@ namespace DacityP
             spectatetarget = null;
             currentmaster = null;
             defaultmaster = null;
+            voidlingSpecial = false;
+            addPlayerControlToNextSpawnCardSpawn = false;
         }
 
         void OnEnable()
@@ -239,7 +292,7 @@ namespace DacityP
         {
             if (runIsActive)
             {
-                self.creditMultiplier *= 0.5f;
+                self.creditMultiplier *= 0.85f;
             }
             orig(self);
         }
@@ -259,6 +312,7 @@ namespace DacityP
             
             Debug.Log(text);
             */
+            if (spectatetarget == null && !currentmaster) ChangeNextTarget(); // Attempt to lock on to anything at all, every frame - This is to prevent problems with the camera not auto-locking
             InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
             InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
             InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
@@ -300,8 +354,6 @@ namespace DacityP
             if (InputManager.FocusTarget.justPressed)
             {
                 if (spectatetarget) {
-                    Debug.LogFormat("Asking {0} enemies to attack the current target {1}", DirectorState.instance.spawnedCharacters.Count, Util.GetBestBodyName(spectatetarget));
-
                     CharacterMaster target = spectatetarget.GetComponent<CharacterMaster>();
                     foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
                     {
@@ -335,6 +387,7 @@ namespace DacityP
             
             defaultmaster.teamIndex = TeamIndex.Neutral;
             currentmaster = defaultmaster;
+            currentmaster.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
             currentai = null;
             var bodysetupdel = (CharacterBody body) =>
             {
@@ -343,24 +396,31 @@ namespace DacityP
                     Debug.LogWarning("No body object found!");
                     return;
                 }
-                
-                Debug.LogWarning("Colliders Disabled.");
                 body.AddBuff(RoR2Content.Buffs.Cloak);
-                if (!debugEnabled)
-                {
-                    body.AddBuff(RoR2Content.Buffs.Intangible);
-                    var colsp = body.GetComponent<SphereCollider>();
-                    if (colsp) colsp.enabled = false;
-                    var colca = body.GetComponent<CapsuleCollider>();
-                    if (colca) colca.enabled = false;
-                }
+                body.AddBuff(RoR2Content.Buffs.Intangible);
+                body.AddBuff(RoR2Content.Buffs.Entangle);
+                Debug.LogWarning("Added buffs.");
                 body.teamComponent.teamIndex = TeamIndex.Neutral;
                 body.skillLocator.primary = null;
                 body.skillLocator.secondary = null;
                 body.skillLocator.utility = null;
                 body.skillLocator.special = null;
                 body.master.preventGameOver = false;
+                body.gameObject.layer = LayerIndex.noCollision.intVal;
                 ChangeNextTarget();
+                Debug.LogFormat("Setting up in {0}", Stage.instance.sceneDef.baseSceneName);
+                if (Stage.instance.sceneDef.baseSceneName.Equals("moon2"))
+                {
+                    Debug.Log("Moon setup called");
+                    body.gameObject.layer = LayerIndex.playerBody.intVal;
+                    TeleportHelper.TeleportGameObject(body.gameObject, new Vector3(-47.0f, 524.0f, -23.0f));
+                }
+                else if (Stage.instance.sceneDef.baseSceneName.Equals("voidraid"))
+                {
+                    Debug.Log("Voidling setup called");
+                    body.gameObject.layer = LayerIndex.playerBody.intVal;
+                    TeleportHelper.TeleportGameObject(body.gameObject, new Vector3(-81.0f, 50.0f, 82.0f));
+                }
                 Debug.Log("Setup complete!");
             };
             defaultmaster.onBodyStart += bodysetupdel;
@@ -474,12 +534,13 @@ namespace DacityP
         private void SetupSceneChange()
         {
             DirectorState.UpdateMonsterSelection();
+            voidlingSpecial = false;
             if (activehud == null)
             {
                 activehud = Instantiate(hud);
                 Debug.LogWarning("Instantiated new hud.");
             }
-            Invoke("PostStart", 0.3f);
+            Invoke("PostStart", 0.7f);
         }
 
         private void PostStart()
@@ -491,14 +552,12 @@ namespace DacityP
             if (DirectorState.instance != null) DirectorState.instance.RefreshForNewStage();
             else Debug.LogWarning("No DirectorState exists yet.");
             Debug.Log("UI Instantiated.");
-            
             ChildLocator t = activehud.GetComponent<ChildLocator>();
             targethb = t.FindChild(0).GetComponent<HealthBar>();
             spnamelabel = t.FindChild(1).GetComponent<TextMeshProUGUI>();
             ChangeNextTarget();
             HUDEnable();
             SetBaseUIVisible(false);
-            
         }
 
         private void SetBaseUIVisible(bool value)
@@ -617,12 +676,17 @@ namespace DacityP
             currentcontroller.enabled = true;
             playerStatsComponent.enabled = true;
             Run.instance.userMasters[dirpnuser.id] = c;
-            currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
             AIDisable();
             if (currentai) currentai.onBodyDiscovered += AIDisable;
             GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
+            if (currentbody) {
+                //currentbody.networkIdentity.localPlayerAuthority = true;
+                //currentbody.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
+            }
             currentmaster.onBodyStart += delegate(CharacterBody b) {
                 b.master.preventGameOver = false;
+                //b.networkIdentity.localPlayerAuthority = true;
+                //b.networkIdentity.AssignClientAuthority(dirpnuser.connectionToClient);
             };
             SetBaseUIVisible(c != defaultmaster);
             if (c == defaultmaster) ChangeNextTarget();
@@ -632,18 +696,20 @@ namespace DacityP
         private void DisengagePlayerControl(bool revertfallback = true)
         {
             Debug.LogFormat("Disengaging player control from {0}...", currentmaster);
-            if (currentmaster && currentmaster != defaultmaster)
+            if (currentmaster)
             {
-                GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
-                if (currentai) currentai.onBodyDiscovered -= AIDisable;
-                AIEnable();
+                if (currentmaster != defaultmaster)
+                {
+                    Debug.Log("Non-default character, performing special remove...");
+                    GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
+                    if (currentai) currentai.onBodyDiscovered -= AIDisable;
+                    AIEnable();
+                    currentai = null;
+                    if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
+                    currentmaster.playerCharacterMasterController = null;
+                }
                 if (currentcontroller) currentcontroller.enabled = false;
-                currentai = null;
-                //Debug.Log("Controller disabled.");
-                if (currentbody && currentbody.networkIdentity) currentbody.networkIdentity.RemoveClientAuthority(dirpnuser.connectionToClient);
-                currentmaster.playerCharacterMasterController = null;
                 Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
-                var prevmaster = currentmaster;
                 currentmaster = null;
             }
             //Debug.Log("Deactivated.");
@@ -664,7 +730,7 @@ namespace DacityP
             }
             else
             {
-                //Debug.Log("It doesn't have an AI!");
+                Debug.LogWarning("Warning: No AI component to disable.");
             }
         }
 
@@ -753,63 +819,6 @@ namespace DacityP
             }
         }
 
-        [ConCommand(commandName = "prvd_item", flags = ConVarFlags.None, helpText = "Gives an item to a user.")]
-        private static void CCGiveItem(ConCommandArgs args)
-        {
-            if (!NetworkServer.active)
-            {
-                Debug.LogError("prvd_item called on client.");
-                return;
-            }
-            if (args.Count != 3) {
-                Debug.Log("Usage: prvd_item [item name] [count] [target name]");
-                Debug.LogFormat("3 arguments required, but {1} given.", args.Count);
-                return;
-            }
-            CharacterMaster target = null;
-            foreach (PlayerCharacterMasterController cmc in PlayerCharacterMasterController.instances)
-            {
-                if (cmc.GetDisplayName() == args[2])
-                {
-                    target = cmc.master;
-                    break;
-                }
-            }
-            if (!target)
-            {
-                Debug.LogErrorFormat("Unable to find playerobject with name {0}", args[2]);
-                return;
-            }
-            ItemIndex itemind = ItemCatalog.FindItemIndex(args[0]);
-            
-            if (itemind == ItemIndex.None)
-            {
-                if (Int32.TryParse(args[0], out int direct)) itemind = (ItemIndex)direct;
-                else
-                {
-                    Debug.LogErrorFormat("Could not find corresponding item index for {0}", args[0]);
-                    return;
-                }
-            }
-            if (!target.inventory)
-            {
-                Debug.LogErrorFormat("Player {0} does not have an inventory object!", args[3]);
-                return;
-            }
-            if (!Int32.TryParse(args[1], out int count))
-            {
-                Debug.LogErrorFormat("{0} is not a valid count!", args[1]);
-                return;
-            }
-            ItemDef itemdef = ItemCatalog.GetItemDef(itemind);
-            if (!itemdef)
-            {
-                Debug.LogErrorFormat("No such item with index {0}", args[0]);
-                return;
-            }
-            target.inventory.GiveItem(itemdef);
-        }
-
         [ConCommand(commandName = "prvd_rundata", flags = ConVarFlags.None, helpText = "Check the data of the current run.")]
         private static void CCRunData(ConCommandArgs args)
         {
@@ -842,6 +851,9 @@ namespace DacityP
         private static void CCDumpPlayer(ConCommandArgs args)
         {
             Debug.Log("Player Data ---");
+            Debug.LogFormat("PCMC Count: {0}", PlayerCharacterMasterController.instances.Count);
+            Debug.LogFormat("In-game count: {0}", Run.instance.participatingPlayerCount);
+            Debug.Log("---------------");
             foreach (PlayerCharacterMasterController pcmc in PlayerCharacterMasterController.instances)
             {
                 Debug.LogFormat("{0}: {1}", pcmc.GetDisplayName(), pcmc.preventGameOver);

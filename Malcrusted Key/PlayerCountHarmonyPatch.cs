@@ -15,7 +15,7 @@ namespace DacityP
         public static void ParticipatingPlayerCountOverride(ref int __result)
         {
             if (!Providirector.runIsActive) return;
-            __result = Math.Max(1, __result - Providirector.instance.extrachars);
+            __result--;
         }
     }
 }
