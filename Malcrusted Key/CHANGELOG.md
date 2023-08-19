@@ -1,5 +1,7 @@
 ﻿### Version History
 
+# 0.2.1
+- Hotfix for an NRE which causes the Map to fail to teleport characters in bounds
 # 0.2.0
 - The last version was labelled incorrectly - a bunch of content has been added since then. This is probably the biggest update to date!
 - Added remaining monster icons for vanilla game, SotV will have to wait a bit

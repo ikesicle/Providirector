@@ -57,7 +57,7 @@ namespace DacityP
         {
             get
             {
-                if (currentmaster) currentmaster.GetBody();
+                if (currentmaster) return currentmaster.GetBody();
                 return null;
             }
         }
@@ -166,7 +166,7 @@ namespace DacityP
         private void MapZone_TeleportBody(On.RoR2.MapZone.orig_TeleportBody orig, MapZone self, CharacterBody characterBody)
         {
             // Special exception
-            if (characterBody == defaultmaster.GetBody())
+            if (defaultmaster && characterBody == defaultmaster.GetBody())
             {
                 Debug.LogWarning("In-zone TP cancelled for the director.");
                 return;
@@ -233,6 +233,7 @@ namespace DacityP
         {
             orig(self);
             if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
+            if (runIsActive) TeleportHelper.TeleportGameObject(currentmaster.GetBodyObject(), new Vector3(303, -100, 393));
         }
 
         private void LockOnPhase3(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)
