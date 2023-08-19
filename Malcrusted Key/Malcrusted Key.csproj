@@ -15,9 +15,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="ProvidirectorHUD.dll" />
-  </ItemGroup>
-  <ItemGroup>
     <PackageReference Include="BepInEx.Analyzers" Version="1.0.*">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -36,9 +33,6 @@
     <Reference Include="ScriptsAssembly">
       <HintPath>ScriptsAssembly.dll</HintPath>
     </Reference>
-  </ItemGroup>
-  <ItemGroup>
-    <Resource Include="ProvidirectorHUD.dll" />
   </ItemGroup>
   <ItemGroup>
     <None Update="CHANGELOG.md">
