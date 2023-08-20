@@ -17,6 +17,8 @@ using HarmonyLib;
 using RiskOfOptions;
 using RiskOfOptions.Options;
 using TMPro;
+using IL.RoR2.Artifacts;
+using RoR2.Artifacts;
 
 #pragma warning disable Publicizer001
 
@@ -36,6 +38,7 @@ namespace DacityP
         private static ConfigEntry<bool> _modenabled;
         private static bool _modenabledfallback = true;
         public static bool modenabled => _modenabled == null ? _modenabledfallback : _modenabled.Value;
+        
         
         private static ConfigEntry<bool> _debugenabled;
         private static bool _debugenabledfallback = false;
@@ -94,7 +97,7 @@ namespace DacityP
             harmonyinst = new Harmony(Info.Metadata.GUID);
 
             _modenabled = Config.Bind<bool>("General", "Mod Enabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
-            _debugenabled = Config.Bind<bool>("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON DURING REGULAR GAMEPLAY!\nTHIS MODE PREVENTS GAME OVERS AND IS PRONE TO SOFTLOCKS.");
+            //_debugenabled = Config.Bind<bool>("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies, debug Lemurian, etc.)\nNOTE: DO NOT LEAVE THIS ON DURING REGULAR GAMEPLAY!\nTHIS MODE PREVENTS GAME OVERS AND IS PRONE TO SOFTLOCKS.");
 
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
             RunHookSetup();
@@ -117,6 +120,7 @@ namespace DacityP
             On.RoR2.MapZone.TeleportBody += MapZone_TeleportBody;
             On.RoR2.VoidRaidGauntletController.Start += VoidRaidGauntletController_Start;
             On.RoR2.ScriptedCombatEncounter.BeginEncounter += SCEControlGate;
+            On.RoR2.ArenaMissionController.BeginRound += FieldCardUpdate;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += BrotherEncounterPhaseBaseState_PreEncounterBegin;
             On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerControlSetup;
             On.EntityStates.Missions.BrotherEncounter.PreEncounter.OnEnter += PreEncounterCollisionDisable;
@@ -127,9 +131,21 @@ namespace DacityP
             if (harmonyinst != null) harmonyinst.PatchAll(typeof(HarmonyPatches));
         }
 
+        private void FieldCardUpdate(On.RoR2.ArenaMissionController.orig_BeginRound orig, ArenaMissionController self)
+        {
+            orig(self);
+            if (!runIsActive) return;
+            DirectorState.spawnCardTemplates.Clear();
+            foreach (DirectorCard c in self.activeMonsterCards) DirectorState.spawnCardTemplates.Add(c.spawnCard);
+            DirectorState.monsterInv = ArenaMissionController.instance.inventory;
+            DirectorState.instance.isDirty = true;
+            DirectorState.instance.rateModifier = DirectorState.RateModifier.None;
+        }
+
         private void SCEControlGate(On.RoR2.ScriptedCombatEncounter.orig_BeginEncounter orig, ScriptedCombatEncounter self)
         {
             if (self.hasSpawnedServer || !NetworkServer.active) return;
+            if (!runIsActive) { orig(self); return; }
             if (scecontrolnext)
             {
                 scecontrolnext = false;
@@ -143,15 +159,13 @@ namespace DacityP
                     currentsquad = null;
                 };
             }
+            orig(self);
         }
 
         private void VoidRaidGauntletController_Start(On.RoR2.VoidRaidGauntletController.orig_Start orig, VoidRaidGauntletController self)
         {
             orig(self);
-            if (runIsActive)
-            {
-                defaultmaster.GetBodyObject().layer = LayerIndex.noCollision.intVal;
-            }
+            if (runIsActive) defaultmaster.GetBodyObject().layer = LayerIndex.noCollision.intVal;
         }
 
         private void PreEncounterCollisionDisable(On.EntityStates.Missions.BrotherEncounter.PreEncounter.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.PreEncounter self)
@@ -229,7 +243,7 @@ namespace DacityP
         {
             orig(self);
             if (DirectorState.instance) DirectorState.instance.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
-            if (runIsActive) TeleportHelper.TeleportGameObject(currentmaster.GetBodyObject(), new Vector3(303, -100, 393));
+            if (runIsActive) TeleportHelper.TeleportGameObject(currentmaster.GetBodyObject(), new Vector3(303, -169, 394));
         }
 
         private void LockOnPhase3(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)
@@ -273,7 +287,7 @@ namespace DacityP
         private void MithrixPlayerControlSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
         {
             orig(self, master);
-            if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive) return;
+            if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive || (defaultmaster != currentmaster)) return;
             AddPlayerControl(master);
         }
 
@@ -281,6 +295,7 @@ namespace DacityP
         {
             orig(self);
             if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive) return;
+            scecontrolnext = true;
         }
 
         private void CombatDirector_Awake(On.RoR2.CombatDirector.orig_Awake orig, CombatDirector self)
@@ -331,10 +346,11 @@ namespace DacityP
                 pos = pos + rot * new Vector3(0, 0, 5);
             }
             if (DirectorState.instance == null) return;
-            if (InputManager.ToggleAffixCommon.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level1;
-            if (InputManager.ToggleAffixCommon.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
-            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.eliteTier = DirectorState.EliteTier.Level2;
-            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.eliteTier = DirectorState.EliteTier.Basic;
+            bool honorenabled = RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.EliteOnly);
+            if (InputManager.ToggleAffixCommon.justPressed && !honorenabled) DirectorState.instance.eliteTier = DirectorState.eliteTiers[1];
+            if (InputManager.ToggleAffixCommon.justReleased && !honorenabled) DirectorState.instance.eliteTier = DirectorState.eliteTiers[0];
+            if (InputManager.ToggleAffixRare.justPressed) DirectorState.instance.eliteTier = DirectorState.eliteTiers[3];
+            if (InputManager.ToggleAffixRare.justReleased) DirectorState.instance.eliteTier = DirectorState.eliteTiers[honorenabled ? 2 : 0];
             if ((localuser.eventSystem && localuser.eventSystem.isCursorVisible) || currentmaster != defaultmaster) return;
             if (InputManager.DebugSpawn.justPressed && debugenabled) AddPlayerControl(Spawn("LemurianMaster", "LemurianBody", pos, rot));
             if (InputManager.NextTarget.justPressed) ChangeNextTarget();
@@ -350,8 +366,9 @@ namespace DacityP
             {
                 if (spectatetarget) {
                     CharacterMaster target = spectatetarget.GetComponent<CharacterMaster>();
-                    foreach (CharacterMaster c in DirectorState.instance.spawnedCharacters)
+                    foreach (TeamComponent tc in TeamComponent.GetTeamMembers(TeamIndex.Monster))
                     {
+                        CharacterMaster c = tc.body.master;
                         if (target == c) continue;
                         foreach (BaseAI ai in c.aiComponents)
                         {
@@ -383,6 +400,7 @@ namespace DacityP
             defaultmaster.teamIndex = TeamIndex.Neutral;
             currentmaster = defaultmaster;
             currentmaster.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
+            
             currentai = null;
             var bodysetupdel = (CharacterBody body) =>
             {
@@ -550,6 +568,21 @@ namespace DacityP
             targethb = t.FindChild(0).GetComponent<HealthBar>();
             spnamelabel = t.FindChild(1).GetComponent<TextMeshProUGUI>();
             ChangeNextTarget();
+            DirectorState.eliteTiers = CombatDirector.eliteTiers;
+            if (Stage.instance.sceneDef.baseSceneName.Equals("arena"))
+            {
+                Debug.Log("Void Field setup called");
+                DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
+                DirectorState.spawnCardTemplates.Clear();
+            }
+            if (RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.MonsterTeamGainsItems))
+            {
+                DirectorState.monsterInv = RoR2.Artifacts.MonsterTeamGainsItemsArtifactManager.monsterTeamInventory;
+            }
+            else DirectorState.monsterInv = null;
+            if (RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.EliteOnly)) DirectorState.instance.eliteTier = DirectorState.eliteTiers[2];
+            scecontrolcurrent = false;
+            scecontrolnext = false;
             HUDEnable();
             SetBaseUIVisible(false);
         }
@@ -706,7 +739,7 @@ namespace DacityP
                 Debug.LogFormat("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
                 currentmaster = null;
             }
-            if (currentmaster == null)
+            if (currentmaster == null && revertfallback)
             {
                 if (currentsquad)
                 {
@@ -721,9 +754,8 @@ namespace DacityP
                     }
                     Debug.Log("No alive candidates. Proceeding.");
                 }
-                if (revertfallback)
-                {
-                    Debug.Log("Reverting to default master...");
+                else {
+                Debug.Log("Reverting to default master...");
                     AddPlayerControl(defaultmaster);
                 }
             }
