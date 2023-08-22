@@ -173,6 +173,7 @@ namespace DacityP
                 };
                 currentSquad.onDefeatedServer += delegate ()
                 {
+                    Debug.Log("Combat squad defeated, reverting to null");
                     currentSquad = null;
                 };
             }
@@ -323,7 +324,6 @@ namespace DacityP
             orig(self, master);
             if ((self.phaseControllerChildString == "Phase2" && umbralMithrix == null) || !runIsActive || (defaultMaster != currentMaster)) return;
             AddPlayerControl(master);
-            ChangeNextTarget();
         }
 
         private void MithrixPlayerSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_PreEncounterBegin orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self)
@@ -446,19 +446,6 @@ namespace DacityP
                 body.master.preventGameOver = false;
                 body.gameObject.layer = LayerIndex.noCollision.intVal;
                 ChangeNextTarget();
-                Debug.LogFormat("Setting up in {0}", Stage.instance.sceneDef.baseSceneName);
-                if (Stage.instance.sceneDef.baseSceneName.Equals("moon2"))
-                {
-                    Debug.Log("Moon setup called");
-                    body.gameObject.layer = LayerIndex.playerBody.intVal;
-                    TeleportHelper.TeleportGameObject(body.gameObject, new Vector3(-47.0f, 524.0f, -23.0f));
-                }
-                else if (Stage.instance.sceneDef.baseSceneName.Equals("voidraid"))
-                {
-                    Debug.Log("Voidling setup called");
-                    body.gameObject.layer = LayerIndex.playerBody.intVal;
-                    TeleportHelper.TeleportGameObject(body.gameObject, new Vector3(-81.0f, 50.0f, 82.0f));
-                }
                 Debug.Log("Setup complete!");
             };
             defaultMaster.onBodyStart += bodysetupdel;
@@ -467,9 +454,6 @@ namespace DacityP
         private void Run_OnServerSceneChanged(On.RoR2.Run.orig_OnServerSceneChanged orig, Run self, string sceneName)
         {
             orig(self, sceneName);
-            //if (sceneName == "moon2") viewingOverride = moon2FightActivate;
-            //else if (sceneName == "moon") viewingOverride = moonFightActivate;
-            //else viewingOverride = Vector3.zero;
             if (runIsActive) SetupSceneChange();
         }
 
@@ -571,6 +555,7 @@ namespace DacityP
         private void SetupSceneChange()
         {
             DirectorState.UpdateMonsterSelection();
+            if 
             if (activehud == null)
             {
                 activehud = Instantiate(hud);
@@ -593,7 +578,20 @@ namespace DacityP
             spnamelabel = t.FindChild(1).GetComponent<TextMeshProUGUI>();
             ChangeNextTarget();
             DirectorState.eliteTiers = CombatDirector.eliteTiers;
-            if (Stage.instance.sceneDef.baseSceneName.Equals("arena"))
+            Debug.LogFormat("Setting up in {0}", Stage.instance.sceneDef.baseSceneName);
+            if (Stage.instance.sceneDef.baseSceneName.Equals("moon2"))
+            {
+                Debug.Log("Moon setup called");
+                currentbody.gameObject.layer = LayerIndex.playerBody.intVal;
+                TeleportHelper.TeleportGameObject(currentbody.gameObject, new Vector3(-47.0f, 524.0f, -23.0f));
+            }
+            else if (Stage.instance.sceneDef.baseSceneName.Equals("voidraid"))
+            {
+                Debug.Log("Voidling setup called");
+                currentbody.gameObject.layer = LayerIndex.playerBody.intVal;
+                TeleportHelper.TeleportGameObject(currentbody.gameObject, new Vector3(-81.0f, 50.0f, 82.0f));
+            }
+            else if (Stage.instance.sceneDef.baseSceneName.Equals("arena"))
             {
                 Debug.Log("Void Field setup called");
                 DirectorState.instance.rateModifier = DirectorState.RateModifier.Locked;
@@ -642,6 +640,8 @@ namespace DacityP
                     spectateTarget = readOnlyInstancesList[i].gameObject;
                     if (debugEnabled) Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
                     UpdateHUD();
+                    CancelInvoke("ChangeNextTarget");
+                    CancelInvoke("ChangePreviousTarget");
                     return;
                 }
             }
@@ -652,6 +652,8 @@ namespace DacityP
                     spectateTarget = readOnlyInstancesList[j].gameObject;
                     if (debugEnabled) Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
                     UpdateHUD();
+                    CancelInvoke("ChangeNextTarget");
+                    CancelInvoke("ChangePreviousTarget");
                     return;
                 }
             }
@@ -674,6 +676,8 @@ namespace DacityP
                     spectateTarget = readOnlyInstancesList[i].gameObject;
                     if (debugEnabled) Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
                     UpdateHUD();
+                    CancelInvoke("ChangeNextTarget");
+                    CancelInvoke("ChangePreviousTarget");
                     return;
                 }
             }
@@ -684,6 +688,8 @@ namespace DacityP
                     spectateTarget = readOnlyInstancesList[j].gameObject;
                     if (debugEnabled) Debug.LogFormat("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
                     UpdateHUD();
+                    CancelInvoke("ChangeNextTarget");
+                    CancelInvoke("ChangePreviousTarget");
                     return;
                 }
             }
@@ -734,7 +740,7 @@ namespace DacityP
             Run.instance.userMasters[directorUser.id] = c;
             AIDisable();
             if (currentai) currentai.onBodyDiscovered += AIDisable;
-            GlobalEventManager.onCharacterDeathGlobal += DisengagePlayerControl;
+            currentMaster.onBodyDeath.AddListener(onNewMasterDeath);
             if (currentbody) {
                 //currentbody.networkIdentity.localPlayerAuthority = true;
                 //currentbody.networkIdentity.AssignClientAuthority(directorUser.connectionToClient);
@@ -747,6 +753,16 @@ namespace DacityP
             SetBaseUIVisible(c != defaultMaster);
             if (c == defaultMaster) ChangeNextTarget();
             Debug.LogFormat("{0} set as new master.", currentMaster);
+            void onNewMasterDeath()
+            {
+                currentMaster.onBodyDeath.RemoveListener(onNewMasterDeath);
+                Debug.Log("Current Master has died, checking if we should disengage.");
+                if (currentMaster.IsDeadAndOutOfLivesServer())
+                {
+                    DisengagePlayerControl();
+                }
+                else Debug.Log("No need to disengage, we have a pending revive.");
+            }
         }
 
         private void DisengagePlayerControl(bool revertfallback = true)
@@ -757,7 +773,6 @@ namespace DacityP
                 if (currentMaster != defaultMaster)
                 {
                     Debug.Log("Non-default character, performing special remove...");
-                    GlobalEventManager.onCharacterDeathGlobal -= DisengagePlayerControl;
                     if (currentai) currentai.onBodyDiscovered -= AIDisable;
                     AIEnable();
                     currentai = null;
@@ -775,7 +790,7 @@ namespace DacityP
                     Debug.Log("Swapping to next active master in current squad...");
                     foreach (CharacterMaster candidate in currentSquad.readOnlyMembersList)
                     {
-                        if (candidate.hasBody || candidate.IsExtraLifePendingServer())
+                        if (!candidate.IsDeadAndOutOfLivesServer())
                         {
                             AddPlayerControl(candidate);
                             return;
@@ -783,10 +798,8 @@ namespace DacityP
                     }
                     Debug.Log("No alive candidates. Proceeding.");
                 }
-                else {
                 Debug.Log("Reverting to default master...");
-                    AddPlayerControl(defaultMaster);
-                }
+                AddPlayerControl(defaultMaster);
             }
         }
 
@@ -814,11 +827,6 @@ namespace DacityP
                 if (currentbody) currentai.OnBodyStart(currentbody);
                 //Debug.Log("AI Enabled.");
             }
-        }
-
-        private void DisengagePlayerControl(DamageReport dr)
-        {
-            if (dr.victimMaster == currentMaster) DisengagePlayerControl();
         }
 
         public CharacterMaster Spawn(string mastername, string bodyname, Vector3 position, Quaternion rotation, EliteDef eliteDef = null, int levelbonus = 0, bool includePlayerControlInterface = true, bool bigBuffs = true)
@@ -878,7 +886,7 @@ namespace DacityP
         }
 
         [ConCommand(commandName = "check_cameras", flags = ConVarFlags.None, helpText = "Checks the state of all currently active CRCs.")]
-        private static void CCCheckCameras()
+        private static void CCCheckCameras(ConCommandArgs _)
         {
             int i = 0;
             foreach (CameraRigController c in CameraRigController.readOnlyInstancesList)
@@ -897,7 +905,7 @@ namespace DacityP
         }
 
         [ConCommand(commandName = "prvd_rundata", flags = ConVarFlags.None, helpText = "Check the data of the current run.")]
-        private static void CCRunData()
+        private static void CCRunData(ConCommandArgs _)
         {
             if (!Run.instance)
             {
@@ -914,7 +922,7 @@ namespace DacityP
         }
 
         [ConCommand(commandName = "prvd_dump", flags = ConVarFlags.None, helpText = "Dumps director data.")]
-        private static void CCDumpVars()
+        private static void CCDumpVars(ConCommandArgs _)
         {
             Debug.Log("Providirector Data ---");
             Debug.LogFormat("Mod Enabled: {0} {1}", ModEnabled, debugEnabled ? "Debug" : "Normal");
@@ -925,7 +933,7 @@ namespace DacityP
         }
 
         [ConCommand(commandName = "prvd_players", flags = ConVarFlags.None, helpText = "Dumps player data.")]
-        private static void CCDumpPlayer()
+        private static void CCDumpPlayer(ConCommandArgs _)
         {
             Debug.Log("Player Data ---");
             Debug.LogFormat("PCMC Count: {0}", PlayerCharacterMasterController.instances.Count);
