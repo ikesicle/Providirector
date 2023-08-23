@@ -16,6 +16,15 @@ namespace DacityP
         {
             if (!Providirector.runIsActive) return;
             __result--;
+            if (__result <= 0) __result = 1;
+        }
+
+        [HarmonyPostfix, HarmonyPatch(typeof(Run), nameof(Run.livingPlayerCount))]
+        public static void LivingPlayerCountOverride(ref int __result)
+        {
+            if (!Providirector.runIsActive) return;
+            __result--;
+            if (__result <= 0) __result = 1;
         }
     }
 }
