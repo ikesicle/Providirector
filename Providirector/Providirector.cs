@@ -22,11 +22,10 @@ using RiskOfOptions.Options;
 using RiskOfOptions.OptionConfigs;
 using TMPro;
 using BepInEx.Logging;
-using HG;
 
 #pragma warning disable Publicizer001
 
-namespace DacityP
+namespace Providirector
 {
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
@@ -62,11 +61,6 @@ namespace DacityP
 
         // General
         public static bool runIsActive = false;
-        private static AssetBundle assets;
-        private static AssetBundle icons;
-        private static GameObject hudPrefab;
-        private static GameObject serverDirectorPrefab;
-        private static GameObject clientDirectorPrefab;
 
         // Server mode director things
         private static Harmony harmonyInstance;
@@ -152,12 +146,7 @@ namespace DacityP
             CommandHelper.AddToConsoleWhenReady();
 
             var path = System.IO.Path.GetDirectoryName(Info.Location);
-            assets = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "providirectorcore"));
-            hudPrefab = assets.LoadAsset<GameObject>("ProvidirectorUIRoot");
-            serverDirectorPrefab = assets.LoadAsset<GameObject>("ServerDirectorPrefab");
-            clientDirectorPrefab = assets.LoadAsset<GameObject>("ClientDirectorPrefab");
-            icons = AssetBundle.LoadFromFile(System.IO.Path.Combine(path, "monstericons"));
-            MonsterIcon.AddIconsFromBundle(icons);
+            ProvidirectorResources.Load(path);
             harmonyInstance = new Harmony(Info.Metadata.GUID);
             if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
             RunHookSetup();
@@ -192,6 +181,7 @@ namespace DacityP
             On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += Phase3Ready;
             On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter += EncounterFinish;
             On.RoR2.EscapeSequenceController.CompleteEscapeSequence += EscapeSequenceFinish;
+            On.RoR2.EscapeSequenceExtractionZone.OnEnable += MoveToEscapeZone;
             NetworkManagerSystem.onStartClientGlobal += LogClientMessageHandlers;
             NetworkManagerSystem.onStartServerGlobal += LogServerMessageHandlers;
             On.RoR2.Networking.NetworkManagerSystem.OnClientSceneChanged += SetupSceneChange;
@@ -212,6 +202,13 @@ namespace DacityP
             };
 #endif
             if (harmonyInstance != null) harmonyInstance.PatchAll(typeof(HarmonyPatches));
+        }
+
+        private void MoveToEscapeZone(On.RoR2.EscapeSequenceExtractionZone.orig_OnEnable orig, EscapeSequenceExtractionZone self)
+        {
+            orig(self);
+            PLog("EscapeSequence now active.");
+            StartCoroutine(MoveCollisionAttempt(true, rescueShipTriggerZone));
         }
 
         private IEnumerator MoveCollisionAttempt(bool collision, Vector3 position)
@@ -388,11 +385,7 @@ namespace DacityP
 
             if (clientModeDirector == null) return;
 
-            if (spectateTarget == null)
-            {
-                PLog("Attempting lock on...");
-                ChangeNextTarget();
-            }
+            if (spectateTarget == null) ChangeNextTarget();
 
             // Only Local Effects
 
@@ -432,13 +425,8 @@ namespace DacityP
             // At this point we know that the user being added is the player who will be the director, and that we have the authority to manage it.
             directorUser = user;
             defaultMaster = user.master;
-#if !DEBUG
             defaultMaster.bodyPrefab = BodyCatalog.FindBodyPrefab("WispBody");
-#else
-            defaultMaster.bodyPrefab = BodyCatalog.FindBodyPrefab("LemurianBody");
-#endif
             defaultMaster.godMode = true;
-            
             defaultMaster.teamIndex = TeamIndex.Neutral;
             currentMaster = defaultMaster;
             currentMaster.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
@@ -464,7 +452,6 @@ namespace DacityP
                 body.skillLocator.utility = null;
                 body.skillLocator.special = null;
                 body.master.preventGameOver = false;
-                
                 PLog("Setup complete!");
             };
             defaultMaster.onBodyStart += bodysetupdel;
@@ -477,7 +464,7 @@ namespace DacityP
             {
                 if (activeServerDirectorObject == null)
                 {
-                    activeServerDirectorObject = Instantiate(serverDirectorPrefab);
+                    activeServerDirectorObject = Instantiate(ProvidirectorResources.serverDirectorPrefab);
                     serverModeDirector = activeServerDirectorObject.GetComponent<DirectorState>();
                 }
                 scriptEncounterControlCurrent = false;
@@ -599,10 +586,10 @@ namespace DacityP
             if (!runIsActive || !directorIsLocal) return;
             DirectorState.UpdateMonsterSelection();
             if (activeClientDirectorObject == null) {
-                activeClientDirectorObject = Instantiate(clientDirectorPrefab);
+                activeClientDirectorObject = Instantiate(ProvidirectorResources.clientDirectorPrefab);
                 clientModeDirector = activeClientDirectorObject.GetComponent<DirectorState>();
             }
-            if (activeHud == null) activeHud = Instantiate(hudPrefab);
+            if (activeHud == null) activeHud = Instantiate(ProvidirectorResources.hudPrefab);
 
             PLog("Attempting HUD afterinit");
             TrySetHUD();
@@ -1241,6 +1228,8 @@ namespace DacityP
                 mainHud.directorState = clientModeDirector;
                 targetHealthbar = mainHud.spectateHealthBar;
                 spectateLabel = mainHud.spectateNameText;
+                targetHealthbar.style = ProvidirectorResources.GenerateHBS();
+                targetHealthbar.Awake();
             }
             else
             {
@@ -1298,7 +1287,6 @@ namespace DacityP
         {
             orig(self);
             if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
-            StartCoroutine(MoveCollisionAttempt(true, rescueShipTriggerZone));
         }
 
         private void Phase3Ready(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)

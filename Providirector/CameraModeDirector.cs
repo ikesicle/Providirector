@@ -5,7 +5,7 @@ using HG.BlendableTypes;
 using RoR2;
 using RoR2.CameraModes;
 
-namespace DacityP;
+namespace Providirector;
 
 public class CameraModeDirector : CameraModePlayerBasic
 {

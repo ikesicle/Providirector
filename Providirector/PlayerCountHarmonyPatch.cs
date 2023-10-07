@@ -2,7 +2,7 @@
 using RoR2;
 using UnityEngine.Networking;
 
-namespace DacityP
+namespace Providirector
 {
     [HarmonyPatch(MethodType.Getter)]
     public static class HarmonyPatches
