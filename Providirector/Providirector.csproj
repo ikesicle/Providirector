@@ -9,9 +9,7 @@
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <OutputPath>C:\Users\chenh\AppData\Roaming\r2modmanPlus-local\RiskOfRain2\profiles\Default\BepInEx\plugins\SaugaWorkshop-Providirector Development Build</OutputPath>
-    <AssemblyName>Providirector</AssemblyName>
-    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\Debug</OutputPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,32 +33,50 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <None Update="CHANGELOG.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="icon.png">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="manifest.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="monstericons">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <None Remove="NetworkCommands\" />
+    <None Remove="monstericons" />
+    <None Remove="icon.png" />
+    <None Remove="manifest.json" />
+    <None Remove="README.md" />
+    <None Remove="CHANGELOG.md" />
+    <None Remove="ScriptsAssembly.dll" />
+    <None Remove="RiskOfOptions.dll" />
+  </ItemGroup>
+  <ItemGroup>
     <None Update="providirectorui">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="README.md">
+    <None Update="providirectorcore">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="RiskOfOptions.dll">
+    <None Update="ScriptsAssembly.pdb">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="ScriptsAssembly.dll">
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="NetworkCommands\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="monstericons">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="monstericons">
+    </Content>
+    <Content Include="icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    </Content>
+    <Content Include="manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="CHANGELOG.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="ScriptsAssembly.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="RiskOfOptions.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>

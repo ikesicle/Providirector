@@ -57,5 +57,6 @@ public static class InputManager
     public static ButtonState PrevTarget;
     public static ButtonState FocusTarget;
     public static ButtonState BoostTarget;
+    public static ButtonState ToggleHUD;
 }
 

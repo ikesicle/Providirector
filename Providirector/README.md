@@ -21,7 +21,3 @@ These aren't documented very well in the actual game (there's no tutorial or key
 - **V**: While held, you will spawn Tier 2 Elite enemies. (Malachite, Celestial)
 - **F**: Tap to direct all spawned enemies to attack the target you're currently spectating.
 - **B**: Burst. Once your meter is full, use this to temporarily buff all currently spawned enemies.
-
-## Compatiability With Other Mods
-This is a catalogue of known compatiability issues at the moment. If you're experiencing specific issues with a mod, create an issue or shoot me a DM on Discord. My username is `ikesicle`.
-- **Nuxlar**'s **Umbral Mithrix**: Bonfire and Practice Mode are completely broken. Everything else works well enough, I think.
