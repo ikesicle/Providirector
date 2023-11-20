@@ -10,7 +10,7 @@ namespace Providirector
         [HarmonyPostfix, HarmonyPatch(typeof(Run), nameof(Run.participatingPlayerCount))]
         public static void ParticipatingPlayerCountOverride(ref int __result)
         {
-            if (!Providirector.runIsActive || !NetworkServer.active) return;
+            if (!Providirector.runIsActive) return;
             __result--;
             if (__result <= 0) __result = 1;
         }

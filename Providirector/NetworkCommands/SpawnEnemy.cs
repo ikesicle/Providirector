@@ -1,5 +1,4 @@
-﻿using System;
-using ProvidirectorGame;
+﻿using ProvidirectorGame;
 using UnityEngine;
 using UnityEngine.Networking;
 namespace Providirector.NetworkCommands

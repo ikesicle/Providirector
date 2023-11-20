@@ -1,3 +1,11 @@
-﻿### Most Recent Patch (0.3.2)
-
-- Added option to snap spawns to terrain
+## Version 1.0.0
+- NEW: Non-host players can now be set as the director using the `% [username]` command in the lobby.
+    - Alternatively, you can use `% [1 .. number of players]` to select the **i**th player in the lobby as displayed at the bottom of the screen.
+- NEW: Voidling control has been re-added to the game, with full first-person support. Hopefully he controls less clunkily now.
+- Fixed a bug where no director would be chosen.
+- Remaining icons for Survivors of the Void added. Pardon my bad art skills.
+- User interface revamped. Burst and focus now lie at the corners of the screens, just like in Battle Cats! Page indicators and highlights to clearly outline which elite class is selected have been added too.
+- Fixed a bug where the Voidling cutscene would not be properly triggered.
+- NEW: Unspent credits are accumulated over time by the player director, and eventually given to the AI directors to spend. So don't be a bad Dungeon Master and sit on your cash - people want loot, too!
+- NEW: Control the spawn cap for the director, to encourage spending more on stronger monsters, or alternatively to prevent stalling using cheap units. Default value is 40, and is shared with AI-spawned units.
+- NEW: Burst progression! The amount of buffs granted by burst is weaker initially, but gets stronger over time.

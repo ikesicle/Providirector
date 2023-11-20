@@ -4,13 +4,13 @@ using BepInEx.Configuration;
 using RoR2;
 using RoR2.CameraModes;
 using RoR2.CharacterAI;
-using RoR2.Stats;
 using RoR2.UI;
 using RoR2.Networking;
 using R2API.Utils;
 using UnityEngine;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using UnityEngine.Networking;
@@ -30,9 +30,11 @@ namespace Providirector
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.SoftDependency)]
-    [BepInPlugin("com.DacityP.Providirector", "Providirector", "0.0.1")]
+    [BepInPlugin("com.DacityP.Providirector", "Providirector", "1.0.0")]
     public class Providirector : BaseUnityPlugin
     {
+        // TODO: Implement measure to spawn a wisp with the doppelganger effect that contains all reserve credits
+        #region Variables
         private static ConfigEntry<bool> _modEnabled;
         private static readonly bool _modEnabledfallback = true;
         public static bool modEnabled => _modEnabled == null ? _modEnabledfallback : _modEnabled.Value;
@@ -58,19 +60,42 @@ namespace Providirector
         private static ConfigEntry<float> _directorCredGain;
         private static ConfigEntry<int> _directorWalletInit;
         private static ConfigEntry<int> _directorWalletGain;
+        private static ConfigEntry<int> _directorSpawnCap;
 
         // General
         public static bool runIsActive = false;
+        private SyncDirector _currentDirectorConfig;
+        public SyncDirector currentDirectorConfig
+        {
+            get { return _currentDirectorConfig; }
+            set
+            {
+                _currentDirectorConfig = value;
+                if (_currentDirectorConfig != null)
+                {
+                    if (!_currentDirectorConfig.serverData) DirectorState.snapToNearestNode = _currentDirectorConfig.snapToNearestNode;
+                    else
+                    {
+                        DirectorState.baseCreditGain = _currentDirectorConfig.creditInit;
+                        DirectorState.creditGainPerLevel = _currentDirectorConfig.creditGain;
+                        DirectorState.baseWalletSize = _currentDirectorConfig.walletInit;
+                        DirectorState.walletGainPerLevel = _currentDirectorConfig.walletGain;
+                        DirectorState.directorSelfSpawnCap = _currentDirectorConfig.spawnCap;
+                    }
+                }
+            }
+        }
+
+        public DebugInfoPanel panel;
 
         // Server mode director things
         private static Harmony harmonyInstance;
         private static LocalUser localUser => LocalUserManager.readOnlyLocalUsersList[0];
         private CharacterMaster currentMaster;
         private CharacterMaster defaultMaster;
-        private DirectorState serverModeDirector;
-        private DirectorState clientModeDirector;
+        private ServerState serverModeDirector;
+        private ClientState clientModeDirector;
         private CombatSquad currentSquad;
-        private PlayerCharacterMasterController currentController => currentMaster?.playerCharacterMasterController;
         private CharacterBody currentBody
         {
             get
@@ -81,26 +106,29 @@ namespace Providirector
         }
         private BaseAI currentAI;
         private GameObject activeServerDirectorObject;
-        private bool scriptEncounterControlNext;
-        private bool scriptEncounterControlCurrent;
+        private GameObject focusTargetPersistent;
+        private float relockTargetServerTimer;
         private bool forceScriptEncounterAddControl = false;
+        private bool currentlyAddingControl = false;
+        private bool firstControllerAlreadySet = false;
+        private bool enableFirstPerson = false;
 
         // Client mode director things
         private CameraRigController mainCamera => directorUser?.cameraRigController;
         private GameObject activeHud;
+        private ProvidirectorHUD hud;
         private GameObject activeClientDirectorObject;
         private HealthBar targetHealthbar;
         private TextMeshProUGUI spectateLabel;
         private GameObject spectateTarget;
         private GameObject spectateTargetMaster => spectateTarget.GetComponent<CharacterBody>().masterObject;
-        private bool isInPlayerControlMode = false;
+        private CharacterMaster clientDefaultMaster;
+        private float newCharacterMasterSpawnGrace = 0f;
 
         // Advanced Camera Controls for Voidling, copied from FirstPersonRedux
         private static readonly Vector3 frontalCamera = new Vector3(0f, 0f, 0f);
         private CameraTargetParams.CameraParamsOverrideHandle fpHandle;
         private CharacterCameraParamsData cpData;
-
-        
 
         public static Providirector instance;
 
@@ -112,7 +140,7 @@ namespace Providirector
             set
             {
                 _directorUser = value;
-                PLog("Director User set locally to {0}", _directorUser?.GetNetworkPlayerName().GetResolvedName());
+                // PLog("Director User set locally to {0}", _directorUser?.GetNetworkPlayerName().GetResolvedName());
             }
         }
         private static bool directorIsLocal => runIsActive && directorUser == localUser.currentNetworkUser;
@@ -120,31 +148,21 @@ namespace Providirector
 
         // Other locally defined constants
         private const short prvdChannel = 12345;
-        private readonly Vector3 rescueShipTriggerZone = new Vector3(303f, -100f, 393f);
+        private readonly Vector3 rescueShipTriggerZone = new Vector3(303f, -120f, 393f);
         private readonly Vector3 moonFightTriggerZone = new Vector3(-47.0f, 524.0f, -23.0f);
         private readonly Vector3 voidlingTriggerZone = new Vector3(-81.0f, 50.0f, 82.0f);
+        private readonly Vector3 defaultZone = new Vector3(0, -99999f, 0); // Lmfao
+        private const float gracePeriodLength = 5f;
 
         private NetworkConnection serverDirectorConnection => directorUser.connectionToClient;
         private NetworkConnection localToServerConnection => localUser.currentNetworkUser.connectionToServer;
 
+        #endregion Variables
 
-        /* Basic idea of how this will work:
-         * While the game hasn't started yet, one can set the directorUser using a command like /director [username]
-         * - When attempting to set a player as the director user, the handshake channel is first used to 
-         * attempt to ping the networkUser (to see if they have Providirector installed, and if the version is the same)
-         * - If successful, the server sets its directorUser as the client, and the client sets its networkuser to itself.
-         * - On game start, the server will spawn its own "server-mode" directorstate instance, which always has max money and a burst which is always filled (except when discharging). It will then use the command channel to send a message to the client to start, after which...
-         * - The client will spawn its own "client-mode" directorstate, with HUD elements enabled and with money/burst mechanics turned on.
-         * - Spawning or bursting client-side instead sends a message through the command channel. The server performs the action if possible, and then sends a confirmation or denial response. If confirmed, the client-mode director reflects the changes locally.
-         * - What things need to be done locally?
-         */
-
-        // ALWAYS //
+        #region Initialisation Methods
         public void Awake()
         {
             RoR2Application.isModded = true;
-            CommandHelper.AddToConsoleWhenReady();
-
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             ProvidirectorResources.Load(path);
             harmonyInstance = new Harmony(Info.Metadata.GUID);
@@ -152,40 +170,49 @@ namespace Providirector
             RunHookSetup();
         }
 
+        void OnEnable()
+        {
+            instance = this;
+        }
+
+        void OnDisable()
+        {
+            instance = null;
+        }
+
         private void RunHookSetup()
         {
-
             RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
-            Run.onServerGameOver += Run_onServerGameOver;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
-            GlobalEventManager.onCharacterDeathGlobal += SwapTargetAfterDeath;
-            Run.onRunStartGlobal += StartRun;
             Stage.onStageStartGlobal += GlobalStageStart;
+            On.RoR2.Run.Start += StartRun;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
             On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
             Run.onPlayerFirstCreatedServer += SetupDirectorUser;
             On.RoR2.Run.BeginGameOver += Run_BeginGameOver;
             On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
-            On.RoR2.CharacterSpawnCard.GetPreSpawnSetupCallback += NewPrespawnSetup;
-            On.RoR2.MapZone.TeleportBody += MapZone_TeleportBody;
+            On.RoR2.MapZone.TryZoneStart += TryInterceptMasterTP;
+            On.RoR2.GlobalEventManager.OnPlayerCharacterDeath += PreventDeathCallsIfDirector;
             On.RoR2.VoidRaidGauntletController.Start += VoidlingReady;
+            On.RoR2.VoidRaidGauntletController.OnBeginEncounter += SafeBeginEncounter;
             On.RoR2.ScriptedCombatEncounter.BeginEncounter += SCEControlGate;
             On.RoR2.ArenaMissionController.BeginRound += FieldCardUpdate;
             On.RoR2.ArenaMissionController.EndRound += RoundEndLock;
             On.RoR2.Chat.CCSay += InterpretDirectorCommand;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.PreEncounterBegin += MithrixPlayerSetup;
-            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnMemberAddedServer += MithrixPlayerExecute;
-            On.EntityStates.Missions.BrotherEncounter.PreEncounter.OnEnter += PreEncounterReady;
-            On.EntityStates.Missions.BrotherEncounter.Phase1.OnEnter += Phase1Ready;
-            On.EntityStates.Missions.BrotherEncounter.Phase2.OnEnter += Phase2Ready;
-            On.EntityStates.Missions.BrotherEncounter.Phase3.OnEnter += Phase3Ready;
+            On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.OnEnter += BeginMoonPhase;
             On.EntityStates.Missions.BrotherEncounter.EncounterFinished.OnEnter += EncounterFinish;
-            On.RoR2.EscapeSequenceController.CompleteEscapeSequence += EscapeSequenceFinish;
-            On.RoR2.EscapeSequenceExtractionZone.OnEnable += MoveToEscapeZone;
+            On.RoR2.HoldoutZoneController.Start += MoveToEscapeZone;
+            On.RoR2.LocalUser.RebuildControlChain += DirectorControlChainMod;
             NetworkManagerSystem.onStartClientGlobal += LogClientMessageHandlers;
             NetworkManagerSystem.onStartServerGlobal += LogServerMessageHandlers;
             On.RoR2.Networking.NetworkManagerSystem.OnClientSceneChanged += SetupSceneChange;
-
+            On.RoR2.CharacterMaster.SpawnBody += SpawnBodyClientForced;
+            On.EntityStates.VoidRaidCrab.EscapeDeath.FixedUpdate += EscapeDeath_FixedUpdate;
+            On.EntityStates.VoidRaidCrab.BaseSpinBeamAttackState.OnEnter += SetVelocityZeroSpin;
+            On.EntityStates.VoidRaidCrab.BaseVacuumAttackState.OnEnter += SetVelocityZeroVacuum;
+            On.EntityStates.VoidRaidCrab.EscapeDeath.OnExit += SendStartNextDonutMessage;
+            On.RoR2.Artifacts.DoppelgangerInvasionManager.CreateDoppelganger += DisableDoppelgangerControl;
+            
 #if DEBUG
             // Graciously stolen from DropInMultiplayer which is presumably taken from somewhere else
             // Instructions:
@@ -200,60 +227,9 @@ namespace Providirector
                 if (skipClientVerification) PLog("Skipped verification for local join");
                 else orig(a, b);
             };
+            On.RoR2.CameraRigController.Update += CameraRigController_Update;
 #endif
             if (harmonyInstance != null) harmonyInstance.PatchAll(typeof(HarmonyPatches));
-        }
-
-        private void MoveToEscapeZone(On.RoR2.EscapeSequenceExtractionZone.orig_OnEnable orig, EscapeSequenceExtractionZone self)
-        {
-            orig(self);
-            PLog("EscapeSequence now active.");
-            StartCoroutine(MoveCollisionAttempt(true, rescueShipTriggerZone));
-        }
-
-        private IEnumerator MoveCollisionAttempt(bool collision, Vector3 position)
-        {
-            if (!(runIsActive && defaultMaster && haveControlAuthority)) yield break;
-            while (!defaultMaster.GetBodyObject())
-            {
-                PLog("Unable to find director default body object. Retrying in 1s...");
-                yield return new WaitForSeconds(1f);
-            }
-            while (Run.instance.livingPlayerCount < NetworkUser.readOnlyInstancesList.Count)
-            {
-                PLog("Not everyone has joined yet ({0}/{1}). Retrying in 1s...", Run.instance.livingPlayerCount, NetworkUser.readOnlyInstancesList.Count);
-                yield return new WaitForSeconds(1f);
-            }
-            GameObject g = defaultMaster.GetBodyObject();
-            g.layer = collision ? LayerIndex.playerBody.intVal : LayerIndex.noCollision.intVal;
-            TeleportHelper.TeleportGameObject(g, position);
-            PLog("MoveCollisionAttempt --> {0}, {1}", collision, position);
-        }
-
-        private void GlobalStageStart(Stage obj)
-        {
-            if (!runIsActive) return;
-            string sceneName = obj.sceneDef.baseSceneName;
-            if (sceneName.Equals("arena"))
-            {
-                Debug.Log("Void Field setup called");
-                if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-                DirectorState.spawnCardTemplates.Clear();
-            }
-        }
-
-        private void LogServerMessageHandlers()
-        {
-            // Additional because apparently our thing doesn't register
-            NetworkServer.RegisterHandler(prvdChannel, HandleCommsServer);
-            PLog("Providirector Server Message Handler registered on channel {0}", prvdChannel);
-
-        }
-
-        private void LogClientMessageHandlers(NetworkClient client)
-        {
-            client.RegisterHandler(prvdChannel, HandleCommsClient);
-            PLog("Providirector Client Message Handler registered on channel {0}", prvdChannel);
         }
 
         private void SetupRiskOfOptions()
@@ -264,10 +240,13 @@ namespace Providirector
             _directorCredGain = Config.Bind<float>("Director", "Credit Gain Per Level", DirectorState.creditGainPerLevel, String.Format("The amount credit gain increases with level. Default value is {0}.", DirectorState.creditGainPerLevel));
             _directorWalletInit = Config.Bind<int>("Director", "Initial Capacity", (int)DirectorState.baseWalletSize, String.Format("The base maximum capacity of the player director wallet. Default value is {0}.", (int)DirectorState.baseWalletSize));
             _directorWalletGain = Config.Bind<int>("Director", "Capacity Gain Per Level", (int)DirectorState.walletGainPerLevel, String.Format("The amount wallet size increases with level. Default value is {0}.", (int)DirectorState.walletGainPerLevel));
-            _vanillaCreditScale = Config.Bind<float>("Vanilla Config", "Vanilla Director Credit", 0.85f, "How much the vanilla directors have their credit gain scaled. Default value is 85%.");
+            _vanillaCreditScale = Config.Bind<float>("Vanilla Config", "Vanilla Director Credit", 0.4f, "How strong the vanilla directors are. Default value is 40%.");
+            _directorSpawnCap = Config.Bind<int>("Director", "Spawn Cap", DirectorState.directorSelfSpawnCap, string.Format("The maximum amount of characters spawnable by the director at any given time. Default value is {0}", DirectorState.directorSelfSpawnCap));
+
             ModSettingsManager.AddOption(new CheckBoxOption(_modEnabled));
             ModSettingsManager.AddOption(new CheckBoxOption(_nearestNodeSnap));
-            ModSettingsManager.AddOption(new SliderOption(_directorCredInit, new SliderConfig { min = 0f, max = 10f, formatString = "{0:G2}" }));
+            ModSettingsManager.AddOption(new IntSliderOption(_directorSpawnCap, new IntSliderConfig { min = 20, max = 80 }));
+            ModSettingsManager.AddOption(new SliderOption(_directorCredInit, new SliderConfig { min = 0f, max = 5f, formatString = "{0:G2}" }));
             ModSettingsManager.AddOption(new SliderOption(_directorCredGain, new SliderConfig { min = 0f, max = 3f, formatString = "{0:G2}" }));
             ModSettingsManager.AddOption(new IntSliderOption(_directorWalletInit, new IntSliderConfig { min = 0, max = 100 }));
             ModSettingsManager.AddOption(new IntSliderOption(_directorWalletGain, new IntSliderConfig { min = 0, max = 100 }));
@@ -281,145 +260,112 @@ namespace Providirector
 #endif
 
         }
+        #endregion
 
-
-        private void StartRun(Run self)
+        #region General Server-side Methods
+        private CharacterBody SpawnBodyClientForced(On.RoR2.CharacterMaster.orig_SpawnBody orig, CharacterMaster self, Vector3 position, Quaternion rotation)
         {
-            runIsActive = false;
-#if DEBUG
-            PLog("Connected Players: {0}", NetworkUser.readOnlyInstancesList.Count);
-#endif
-            if (modEnabled && NetworkServer.active && (NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled))
+            if (!runIsActive) return orig(self, position, rotation);
+            if (!NetworkServer.active)
+            {
+                Debug.LogWarning("[Server] function 'RoR2.CharacterBody RoR2.CharacterMaster::SpawnBody(UnityEngine.Vector3,UnityEngine.Quaternion)' called on client");
+                return null;
+            }
+            if ((bool)self.bodyInstanceObject)
+            {
+                Debug.LogError("Character cannot have more than one body at this time.");
+                return null;
+            }
+            if (!self.bodyPrefab)
+            {
+                Debug.LogErrorFormat("Attempted to spawn body of character master {0} with no body prefab.", self.gameObject);
+            }
+            if (!self.bodyPrefab.GetComponent<CharacterBody>())
+            {
+                Debug.LogErrorFormat("Attempted to spawn body of character master {0} with a body prefab that has no {1} component attached.", self.gameObject, typeof(CharacterBody).Name);
+            }
+            bool flag = self.bodyPrefab.GetComponent<CharacterDirection>();
+            GameObject gameObject = Instantiate(self.bodyPrefab, position, flag ? Quaternion.identity : rotation);
+            CharacterBody component = gameObject.GetComponent<CharacterBody>();
+            component.masterObject = self.gameObject;
+            component.teamComponent.teamIndex = self.teamIndex;
+            component.SetLoadoutServer(self.loadout);
+            if (flag)
+            {
+                CharacterDirection component2 = gameObject.GetComponent<CharacterDirection>();
+                float y = rotation.eulerAngles.y;
+                component2.yaw = y;
+            }
+            NetworkConnection clientAuthorityOwner = self.GetComponent<NetworkIdentity>().clientAuthorityOwner;
+            // We want to force a spawn if we're currently in a combat encounter
+            bool prefabHasLPA = component.GetComponent<NetworkIdentity>().localPlayerAuthority;
+            if (currentlyAddingControl)
+            {
+                PLog("Current combat encounter is forced to be client-controlled, adding client control to body {0}", component);
+                clientAuthorityOwner = firstControllerAlreadySet ? NetworkServer.connections[0] : directorUser.connectionToClient;
+            }
+            if (clientAuthorityOwner != null && prefabHasLPA)
+            {
+                // PLog("Spawning {0} with client authority", component);
+                clientAuthorityOwner.isReady = true;
+                NetworkServer.SpawnWithClientAuthority(gameObject, clientAuthorityOwner);
+                self.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
+            }
+            else
+            {
+                // PLog("Spawning {0} without client authority, either because no client is set or because the prefab does not have client authority.", component);
+                NetworkServer.Spawn(gameObject);
+            }
+            self.bodyInstanceObject = gameObject;
+            if (!firstControllerAlreadySet && currentlyAddingControl)
+            {
+                component.GetComponent<NetworkIdentity>().localPlayerAuthority = true;
+                AddPlayerControl(self);
+                firstControllerAlreadySet = true;
+            }
+            Run.instance.OnServerCharacterBodySpawned(component);
+            return component;
+        }
+
+        private void StartRun(On.RoR2.Run.orig_Start orig, Run self)
+        {
+            runIsActive = modEnabled && (NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled);
+            orig(self);
+            if (runIsActive)
             {
                 runIsActive = true;
+                if (_modEnabled != null)
+                {
+                    DirectorState.baseCreditGain = _directorCredInit.Value;
+                    DirectorState.creditGainPerLevel = _directorCredGain.Value;
+                    DirectorState.baseWalletSize = _directorWalletInit.Value;
+                    DirectorState.walletGainPerLevel = _directorWalletGain.Value;
+                    DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
+                }
+                PLog(@"Director User is currently set to {0}", directorUser.GetNetworkPlayerName().GetResolvedName());
                 foreach (NetworkUser nu in NetworkUser.readOnlyInstancesList)
                 {
-                    SendSingleGeneric(nu.connectionToClient, MessageType.GameStart, nu == directorUser);
+                    SendNetMessageSingle(nu.connectionToClient, MessageType.GameStart, 1, new GameStart()
+                    {
+                        gameobject = directorUser.gameObject
+                    });
+                    if (nu == directorUser) SendNetMessageSingle(nu.connectionToClient, MessageType.DirectorSync, 1, new SyncDirector(true));
                 }
                 PLog("Providirector has been set up for this run!");
             }
-            
         }
 
-        private void Run_BeginGameOver(On.RoR2.Run.orig_BeginGameOver orig, Run self, GameEndingDef gameEndingDef)
+        private void PreventDeathCallsIfDirector(On.RoR2.GlobalEventManager.orig_OnPlayerCharacterDeath orig, GlobalEventManager self, DamageReport damageReport, NetworkUser victimNetworkUser)
         {
-            if (debugEnabled && runIsActive && !gameEndingDef.isWin) return;
-            orig(self, gameEndingDef);
-        }
-
-        private void Run_onServerGameOver(Run run, GameEndingDef ending)
-        {
-            Run_onRunDestroyGlobal(run);
-        }
-
-        private void Run_onRunDestroyGlobal(Run obj)
-        {
-            if (activeHud) Destroy(activeHud);
-            if (activeServerDirectorObject) Destroy(activeServerDirectorObject);
-            if (activeClientDirectorObject) Destroy(activeClientDirectorObject);
-            activeClientDirectorObject = null;
-            clientModeDirector = null;
-            activeServerDirectorObject = null;
-            serverModeDirector = null;
-            activeHud = null;
-            runIsActive = false;
-            spectateTarget = null;
-            currentMaster = null;
-            defaultMaster = null;
-        }
-
-        void OnEnable()
-        {
-            instance = this;
-        }
-
-        void OnDisable()
-        {
-            instance = null;
-        }
-
-        private void MithrixPlayerSetup(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_PreEncounterBegin orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self)
-        {
-            orig(self);
-            if ((self.phaseControllerChildString == "Phase2") || !runIsActive || !haveControlAuthority) return;
-            scriptEncounterControlNext = true;
-        }
-
-        private void CombatDirector_Awake(On.RoR2.CombatDirector.orig_Awake orig, CombatDirector self)
-        {
-            if (runIsActive && haveControlAuthority)
-            {
-                self.creditMultiplier *= vanillaCreditScale;
-            }
-            orig(self);
-        }
-
-        private void RoR2Application_onUpdate()
-        {
-            if (!runIsActive) return;
-            InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
-            InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
-            InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
-            InputManager.Slot3.PushState(Input.GetKey(KeyCode.Alpha3));
-            InputManager.Slot4.PushState(Input.GetKey(KeyCode.Alpha4));
-            InputManager.Slot5.PushState(Input.GetKey(KeyCode.Alpha5));
-            InputManager.Slot6.PushState(Input.GetKey(KeyCode.Alpha6));
-            InputManager.DebugSpawn.PushState(Input.GetKey(KeyCode.Alpha0));
-            InputManager.BoostTarget.PushState(Input.GetKey(KeyCode.B));
-            InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
-            InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
-            InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
-            InputManager.PrevTarget.PushState(Input.GetKey(KeyCode.Mouse1));
-            InputManager.FocusTarget.PushState(Input.GetKey(KeyCode.F));
-            InputManager.ToggleHUD.PushState(Input.GetKey(KeyCode.Y));
-            Vector3 pos = Vector3.zero;
-            Quaternion rot = Quaternion.identity;
-            if (directorUser && mainCamera)
-            {
-                pos = mainCamera.sceneCam.transform.position;
-                rot = mainCamera.sceneCam.transform.rotation;
-                pos += rot * new Vector3(0, 0, 5);
-                
-            }
-            bool honorenabled = RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.EliteOnly);
-
-            if (clientModeDirector == null) return;
-
-            if (spectateTarget == null) ChangeNextTarget();
-
-            // Only Local Effects
-
-            if ((localUser.eventSystem && localUser.eventSystem.isCursorVisible) || currentMaster != defaultMaster) return;
-
-            if (InputManager.ToggleAffixRare.down) clientModeDirector.eliteTierIndex = EliteTierIndex.Tier2;
-            else if (InputManager.ToggleAffixCommon.down && !honorenabled) clientModeDirector.eliteTierIndex = EliteTierIndex.Tier1;
-            else if (honorenabled) clientModeDirector.eliteTierIndex = EliteTierIndex.Honor1;
-            else clientModeDirector.eliteTierIndex = EliteTierIndex.Normal;
-
-            if (InputManager.NextTarget.justPressed) ChangeNextTarget();
-            if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
-            if (InputManager.SwapPage.justPressed) clientModeDirector.secondPage = !clientModeDirector.secondPage;
-
-            // Server interference required
-            if (InputManager.Slot1.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(0), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.Slot2.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(1), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.Slot3.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(2), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.Slot4.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(3), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.Slot5.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(4), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.Slot6.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(5), clientModeDirector.eliteTierIndex, pos, rot);
-            if (InputManager.FocusTarget.justPressed) SendFocusCommand(localToServerConnection, spectateTargetMaster.GetComponent<CharacterMaster>());
-            if (InputManager.BoostTarget.justPressed) SendBurstCommand(localToServerConnection);
-
-            if (!(haveControlAuthority && directorUser)) return;
-
+            if (!runIsActive || victimNetworkUser == directorUser) return;
+            orig(self, damageReport, victimNetworkUser); // Stop death messages and other hooked things like Refightilization
         }
 
         private void SetupDirectorUser(Run run, PlayerCharacterMasterController generatedPCMC)
         {
             NetworkUser user = generatedPCMC.networkUser;
+            if (!(modEnabled && (NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled))) return;
             if (!directorUser) directorUser = localUser.currentNetworkUser;
-            PLog("User Add Called for {0}", user.GetNetworkPlayerName().GetResolvedName());
-            PLog("Current director user is {0}", directorUser ? directorUser.GetNetworkPlayerName().GetResolvedName() : "null");
             if (!user.master) { PLog(LogLevel.Warning, "No master found on the spawned player!"); return; }
             if (!modEnabled || user != directorUser || !haveControlAuthority) return;
             // At this point we know that the user being added is the player who will be the director, and that we have the authority to manage it.
@@ -430,7 +376,6 @@ namespace Providirector
             defaultMaster.teamIndex = TeamIndex.Neutral;
             currentMaster = defaultMaster;
             currentMaster.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
-            
             currentAI = null;
             var bodysetupdel = (CharacterBody body) =>
             {
@@ -442,15 +387,7 @@ namespace Providirector
                 body.AddBuff(RoR2Content.Buffs.Cloak);
                 body.AddBuff(RoR2Content.Buffs.Intangible);
                 body.AddBuff(RoR2Content.Buffs.Entangle);
-                body.gameObject.layer = LayerIndex.noCollision.intVal;
-                body.skillLocator.primary = null;
-                body.skillLocator.secondary = null;
-                body.master.inventory.GiveItem(RoR2Content.Items.Hoof, 100);
-                body.master.inventory.GiveItem(RoR2Content.Items.Knurl, 100);
-                body.master.inventory.GiveItem(RoR2Content.Items.Feather, 100);
                 body.teamComponent.teamIndex = TeamIndex.Neutral;
-                body.skillLocator.utility = null;
-                body.skillLocator.special = null;
                 body.master.preventGameOver = false;
                 PLog("Setup complete!");
             };
@@ -465,21 +402,246 @@ namespace Providirector
                 if (activeServerDirectorObject == null)
                 {
                     activeServerDirectorObject = Instantiate(ProvidirectorResources.serverDirectorPrefab);
-                    serverModeDirector = activeServerDirectorObject.GetComponent<DirectorState>();
+                    serverModeDirector = activeServerDirectorObject.GetComponent<ServerState>();
+                    Invoke("PostSceneChangeServer", 0.1f);
                 }
-                scriptEncounterControlCurrent = false;
-                scriptEncounterControlNext = false;
-                forceScriptEncounterAddControl = false;
+                forceScriptEncounterAddControl = sceneName.Equals("voidraid") || sceneName.Equals("moon2");
+                enableFirstPerson = sceneName.Equals("voidraid");
+                currentlyAddingControl = false;
+                focusTargetPersistent = null;
                 if (currentMaster != defaultMaster) DisengagePlayerControl();
-                if (sceneName.Equals("voidraid"))
-                {
-                    forceScriptEncounterAddControl = true;
-                    StartCoroutine(MoveCollisionAttempt(true, voidlingTriggerZone));
-                } else if (sceneName.Equals("moon2"))
-                {
-                    StartCoroutine(MoveCollisionAttempt(true, moonFightTriggerZone));
-                }
+            }
+        }
 
+        private void PostSceneChangeServer()
+        {
+            PLog("Added {0} monstercards server-side.", serverModeDirector.UpdateMonsterSelection());
+        }
+
+        private void CombatDirector_Awake(On.RoR2.CombatDirector.orig_Awake orig, CombatDirector self)
+        {
+            if (runIsActive && haveControlAuthority)
+            {
+                self.creditMultiplier *= vanillaCreditScale;
+            }
+            orig(self);
+        }
+
+        private void AddPlayerControl(CharacterMaster target)
+        {
+            if (!haveControlAuthority)
+            {
+                PLog("AddPlayerControl called on client. Cancelling.");
+                return;
+            }
+            if (target == null || target == currentMaster)
+            {
+                PLog(LogLevel.Warning, "Attempt to switch control onto a nonexistent or already present character!");
+                return;
+            }
+            if (!directorUser)
+            {
+                PLog("Attempt to call AddPlayerControl without established DU");
+                return;
+            }
+            if (!defaultMaster)
+            {
+                PLog(LogLevel.Error, "Can't add player control without an established default master to fall back on.");
+                return;
+            }
+            // Void infestor moment
+            PLog("Attempting to take control of CharacterMaster {0}", target.name);
+            if (currentMaster) DisengagePlayerControl(revertfallback: false);
+            else PLog("No currently set master - we can proceed as normal.");
+            currentMaster = target;
+            target.playerCharacterMasterController = defaultMaster.playerCharacterMasterController;
+            target.playerStatsComponent = defaultMaster.playerStatsComponent;
+            currentAI = currentMaster.GetComponent<BaseAI>();
+            target.preventGameOver = false;
+            Run.instance.userMasters[directorUser.id] = target;
+            AIDisable();
+            if (currentAI) currentAI.onBodyDiscovered += AIDisable;
+            target.onBodyDeath.AddListener(onNewMasterDeath);
+            GameObject bodyobj = target.GetBodyObject();
+            directorUser.masterObject = target.gameObject;
+            directorUser.connectionToClient.isReady = true;
+            target.networkIdentity.localPlayerAuthority = true;
+            target.networkIdentity.AssignClientAuthority(directorUser.connectionToClient);
+            newCharacterMasterSpawnGrace = gracePeriodLength;
+            SendSingleGeneric(directorUser.connectionToClient, MessageType.ModeUpdate, currentMaster == defaultMaster);
+            SendNetMessageSingle(directorUser.connectionToClient, MessageType.NotifyNewMaster, 1, new NotifyNewMaster { target = target });
+            SendSingleGeneric(directorUser.connectionToClient, MessageType.FPUpdate, enableFirstPerson);
+            PLog("{0} set as new master.", currentMaster);
+            void onNewMasterDeath()
+            {
+                PLog("Current Master has died, checking if we should disengage.");
+                if (currentMaster.IsDeadAndOutOfLivesServer())
+                {
+                    currentMaster.onBodyDeath.RemoveListener(onNewMasterDeath);
+                    DisengagePlayerControl();
+                }
+                else PLog("No need to disengage, we have a pending revive.");
+            }
+        }
+
+        private IEnumerator SetBodyAuthorityPersistent(GameObject bodyobj)
+        {
+            if (!(bodyobj && bodyobj.GetComponent<CharacterBody>()))
+            {
+                PLog("Body is undefined. Stopping authority set.");
+                yield break;
+            }
+            if (!directorUser)
+            {
+                PLog("No currently set network user. Stopping authority set.");
+                yield break;
+            }
+            PLog("Preparing to set body authority...");
+            NetworkIdentity nid = bodyobj.GetComponent<NetworkIdentity>();
+            directorUser.connectionToClient.isReady = true;
+            nid.localPlayerAuthority = true;
+            bodyobj.GetComponent<CharacterBody>().master.preventGameOver = false;
+            if (nid.clientAuthorityOwner != null && nid.clientAuthorityOwner != directorUser.connectionToClient)
+            {
+                PLog("Removing current authority from {0}", nid.clientAuthorityOwner);
+                nid.RemoveClientAuthority(nid.clientAuthorityOwner);
+            }
+            while (!nid.AssignClientAuthority(directorUser.connectionToClient))
+            {
+                PLog("Failed to assign authority to {0}. Retrying in 1 second...", directorUser.GetNetworkPlayerName().GetResolvedName());
+                yield return new WaitForSeconds(1f);
+            }
+            bodyobj.GetComponent<CharacterBody>().master.preventGameOver = false;
+            PLog("{0} authority given to {1}", bodyobj, nid.clientAuthorityOwner);
+
+        }
+
+        private void DisengagePlayerControl(bool revertfallback = true)
+        {
+            if (!NetworkServer.active)
+            {
+                PLog("DisengagePlayerControl called on client. Cancelling.");
+                return;
+            }
+            PLog("Reverting main player control from {0}...", currentMaster);
+            currentMaster = null;
+            if (revertfallback)
+            {
+                if (currentSquad)
+                {
+                    PLog("Swapping to next active master in current squad...");
+                    foreach (CharacterMaster candidate in currentSquad.readOnlyMembersList)
+                    {
+                        if (!candidate.IsDeadAndOutOfLivesServer())
+                        {
+                            AddPlayerControl(candidate);
+                            return;
+                        }
+                    }
+                    PLog("No alive candidates. Proceeding.");
+                }
+                PLog("Reverting to default master...");
+                AddPlayerControl(defaultMaster);
+            }
+        }
+
+        private void AIDisable()
+        {
+            if (!NetworkServer.active)
+            {
+                PLog("AIDisable called on client. Cancelling.");
+                return;
+            }
+            if (currentAI)
+            {
+                if (currentBody) currentAI.OnBodyLost(currentBody);
+                currentAI.enabled = false;
+                //Debug.Log("AI Disabled.");
+            }
+            else
+            {
+                Debug.LogWarning("Warning: No AI component to disable.");
+            }
+        }
+
+        private void AIDisable(CharacterBody _) { AIDisable(); }
+
+        private void SCEControlGate(On.RoR2.ScriptedCombatEncounter.orig_BeginEncounter orig, ScriptedCombatEncounter self)
+        {
+            if (!runIsActive) { orig(self); return; }
+            if (forceScriptEncounterAddControl)
+            {
+                // PLog("We are going to take control of {0}", self);
+                currentlyAddingControl = true;
+                firstControllerAlreadySet = false;
+                currentSquad = self.combatSquad;
+                currentSquad.onDefeatedServer += delegate ()
+                {
+                    // PLog("Combat squad defeated, reverting to null");
+                    currentSquad = null;
+                };
+            }
+            orig(self);
+            currentlyAddingControl = false;
+        }
+        #endregion
+
+        #region General Client-side Methods
+        private void DirectorControlChainMod(On.RoR2.LocalUser.orig_RebuildControlChain orig, LocalUser self)
+        {
+            if (!(runIsActive && directorIsLocal)) { orig(self); return; }
+            self.cachedMasterObject = null;
+            self.cachedMasterObject = self.currentNetworkUser?.masterObject;
+            self.cachedMaster = self.cachedMasterObject?.GetComponent<CharacterMaster>();
+            self.cachedMasterController = self.cachedMaster?.playerCharacterMasterController;
+            self.cachedStatsComponent = self.cachedMaster?.playerStatsComponent;
+            self.cachedBody = self.cachedMaster?.GetBody();
+            self.cachedBodyObject = self.cachedBody?.gameObject;
+        }
+
+        private void CameraRigController_Update(On.RoR2.CameraRigController.orig_Update orig, CameraRigController self)
+        {
+            orig(self);
+            if (panel && panel.isActiveAndEnabled && self.cameraModeContext.viewerInfo.localUser == localUser)
+            {
+                string toset = string.Format("CameraRigController (Viewer {0}) ==============\n", self.cameraModeContext.viewerInfo.localUser?.currentNetworkUser?.GetNetworkPlayerName().GetResolvedName());
+                toset += string.Format("Mode {0}\n", self.cameraMode);
+                if (self.cameraModeContext.targetInfo.master) toset += string.Format("Target Master: {0} <{1}>\nLinked NU: {2}\n",
+                    self.cameraModeContext.targetInfo.master,
+                    self.cameraModeContext.targetInfo.master.hasEffectiveAuthority,
+                    self.cameraModeContext.targetInfo.networkUser?.GetNetworkPlayerName().GetResolvedName());
+                if (self.cameraModeContext.targetInfo.networkedViewAngles)
+                    toset += string.Format("P {0} Y {1} <{2}>\n",
+                        self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.pitch, self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.yaw, self.cameraModeContext.targetInfo.networkedViewAngles.hasEffectiveAuthority);
+                if (self.cameraModeContext.targetInfo.body)
+                {
+                    toset += string.Format(@"Target Body Data ---
+State - {0}
+Pos - {1}
+",
+                        self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state != null ? self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state : "Unknown",
+                        self.cameraModeContext.targetInfo.body.transform.position
+                );
+                }
+                if (newCharacterMasterSpawnGrace > 0) toset += string.Format("[[ GRACE {0}s ]]\n", newCharacterMasterSpawnGrace);
+                if (self.cameraModeContext.viewerInfo.localUser != null)
+                    toset += string.Format(@"Viewer Local User Data ---
+MasterObj - {0}
+PCMC - {1} <{2}> linked to {3}
+Master -  {4} <{5}>
+Body - {6} <{7}>",
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterObject,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.hasEffectiveAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.master,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster?.hasEffectiveAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedBody,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedBody?.hasEffectiveAuthority);
+                toset += "\nAdditional Debug Data ---\n";
+                if (PhaseCounter.instance != null) toset += string.Format(@"Phase {0}", PhaseCounter.instance.phase);
+                else toset += "Phase N/A";
+                panel.SetDebugInfo(toset);
             }
         }
 
@@ -527,11 +689,13 @@ namespace Providirector
                         cameraRigController.nextTarget = forceSpectate.target;
                         cameraRigController.cameraMode = CameraModePlayerBasic.spectator;
                     }
-                    else if (networkUser == directorUser && isInPlayerControlMode)
+                    else if (networkUserBodyObject && networkUser.master != clientDefaultMaster)
                     {
                         cameraRigController.nextTarget = networkUserBodyObject;
                         cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
-                    } else if (directorIsLocal && !isInPlayerControlMode) {
+                    }
+                    else if (networkUserBodyObject && networkUser.master == clientDefaultMaster)
+                    {
                         cameraRigController.nextTarget = spectateTarget;
                         cameraRigController.cameraMode = CameraModeDirector.director;
                     }
@@ -557,7 +721,7 @@ namespace Providirector
                     {
                         if ((bool)reference)
                         {
-                            UnityEngine.Object.Destroy(cameras[num].gameObject);
+                            Destroy(cameras[num].gameObject);
                         }
                         reference = null;
                     }
@@ -573,7 +737,7 @@ namespace Providirector
             {
                 if ((bool)cameras[m])
                 {
-                    UnityEngine.Object.Destroy(cameras[m].gameObject);
+                    Destroy(cameras[m].gameObject);
                 }
             }
         }
@@ -581,23 +745,14 @@ namespace Providirector
         private void SetupSceneChange(On.RoR2.Networking.NetworkManagerSystem.orig_OnClientSceneChanged orig, NetworkManagerSystem self, NetworkConnection conn)
         {
             orig(self, conn);
-            PLog("Client-side scene changed. Run is active: {0}", runIsActive);
-            PLog("Current director is {0}. Director is local: {1}", directorUser ? directorUser.GetNetworkPlayerName().GetResolvedName() : "null", directorIsLocal);
-            if (!runIsActive || !directorIsLocal) return;
-            DirectorState.UpdateMonsterSelection();
-            if (activeClientDirectorObject == null) {
-                activeClientDirectorObject = Instantiate(ProvidirectorResources.clientDirectorPrefab);
-                clientModeDirector = activeClientDirectorObject.GetComponent<DirectorState>();
-            }
-            if (activeHud == null) activeHud = Instantiate(ProvidirectorResources.hudPrefab);
 
-            PLog("Attempting HUD afterinit");
-            TrySetHUD();
-
-            isInPlayerControlMode = false;
+            if (!runIsActive) return;
             if (RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.MonsterTeamGainsItems)) DirectorState.monsterInv = RoR2.Artifacts.MonsterTeamGainsItemsArtifactManager.monsterTeamInventory;
             else DirectorState.monsterInv = null;
             if (RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.EliteOnly) && clientModeDirector) clientModeDirector.eliteTierIndex = EliteTierIndex.Honor1;
+
+            DirectorState.snapToNearestNode = nearestNodeSnap;
+            DirectorState.eliteTiers = CombatDirector.eliteTiers;
 
             if (_modEnabled != null)
             {
@@ -605,11 +760,114 @@ namespace Providirector
                 DirectorState.creditGainPerLevel = _directorCredGain.Value;
                 DirectorState.baseWalletSize = _directorWalletInit.Value;
                 DirectorState.walletGainPerLevel = _directorWalletGain.Value;
+                DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
             }
-            DirectorState.snapToNearestNode = nearestNodeSnap;
-            DirectorState.eliteTiers = CombatDirector.eliteTiers;
+
+            if (currentDirectorConfig != null)
+            {
+                if (!currentDirectorConfig.serverData) DirectorState.snapToNearestNode = currentDirectorConfig.snapToNearestNode;
+                else
+                {
+                    DirectorState.baseCreditGain = currentDirectorConfig.creditInit;
+                    DirectorState.creditGainPerLevel = currentDirectorConfig.creditGain;
+                    DirectorState.baseWalletSize = currentDirectorConfig.walletInit;
+                    DirectorState.walletGainPerLevel = currentDirectorConfig.walletGain;
+                    DirectorState.directorSelfSpawnCap = currentDirectorConfig.spawnCap;
+                }
+            }
+
+#if DEBUG
+            panel = Instantiate(ProvidirectorResources.debugPanelPrefab).GetComponent<DebugInfoPanel>();
+            if (panel) PLog("Instantiated Debug Panel.");
+            else PLog(LogLevel.Error, "Failed to instantiate debug panel.");
+#endif
+
+            if (directorIsLocal)
+            {
+                if (directorIsLocal && activeClientDirectorObject == null)
+                {
+                    activeClientDirectorObject = Instantiate(ProvidirectorResources.clientDirectorPrefab);
+                    clientModeDirector = activeClientDirectorObject.GetComponent<ClientState>();
+                    PLog("Added {0} monster cards to the client director.", ClientState.UpdateMonsterSelection());
+                    clientModeDirector.OnCachedLimitReached += ClientModeDirector_OnCachedLimitReached;
+                }
+
+                SendNetMessageSingle(directorUser.connectionToServer, MessageType.DirectorSync, 1, new SyncDirector(false));
+                if (activeHud == null) activeHud = Instantiate(ProvidirectorResources.hudPrefab);
+            }
+            PLog("Attempting HUD afterinit");
+            TrySetHUD();
         }
 
+        private void ClientModeDirector_OnCachedLimitReached(int obj)
+        {
+            SendSingleGeneric(localToServerConnection, MessageType.CachedCredits, (uint) obj);
+        }
+
+        public void TrySetHUD()
+        {
+            if (!activeHud)
+            {
+                //PLog("No HUD to set params for, cancelling.");
+                return;
+            }
+            bool flag = true;
+            if (mainCamera && mainCamera.uiCam)
+            {
+                if (activeHud) activeHud.GetComponent<Canvas>().worldCamera = mainCamera.uiCam;
+            }
+            else
+            {
+                flag = false;
+                //PLog("Failed to acquire main camera");
+            }
+            if (directorIsLocal)
+            {
+                hud = activeHud.GetComponent<ProvidirectorHUD>();
+                if (hud)
+                {
+                    hud.clientState = clientModeDirector;
+                    targetHealthbar = hud.spectateHealthBar;
+                    spectateLabel = hud.spectateNameText;
+                    targetHealthbar.style = ProvidirectorResources.GenerateHBS();
+                }
+                else
+                {
+                    flag = false;
+                    //PLog("Failed to setup main HUD components");
+                }
+                if (directorUser.master) clientDefaultMaster = directorUser.master;
+                else
+                {
+                    flag = false;
+                    //PLog("Failed to acquire local master");
+                }
+            }
+            if (!flag)
+            {
+                PLog("HUD Setup incomplete, retrying in 0.5s");
+                Invoke("TrySetHUD", 0.5f);
+            }
+
+            else
+            {
+#if DEBUG
+                panel.GetComponent<Canvas>().worldCamera = mainCamera.uiCam;
+#endif
+                if (!directorIsLocal) return;
+                ToggleHUD(true);
+                SetBaseUIVisible(false);
+                SetFirstPersonClient(false);
+                PLog("HUD setup complete");
+                if (NetworkManager.networkSceneName.Equals("voidraid"))
+                    StartCoroutine(MoveCollisionAttempt(voidlingTriggerZone, NetworkManager.networkSceneName));
+                else if (NetworkManager.networkSceneName.Equals("moon2"))
+                    StartCoroutine(MoveCollisionAttempt(moonFightTriggerZone, NetworkManager.networkSceneName));
+                else
+                    StartCoroutine(MoveCollisionAttempt(defaultZone, NetworkManager.networkSceneName));
+
+            }
+        }
 
         private void SetBaseUIVisible(bool value)
         {
@@ -634,25 +892,19 @@ namespace Providirector
             int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
             for (int i = num + 1; i < readOnlyInstancesList.Count; i++)
             {
-                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
+                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[i].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
                 {
                     spectateTarget = readOnlyInstancesList[i].gameObject;
-                    if (debugEnabled) PLog("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
-                    UpdateHUD();
-                    CancelInvoke("ChangeNextTarget");
-                    CancelInvoke("ChangePreviousTarget");
+                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
             }
             for (int j = 0; j <= num; j++)
             {
-                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
+                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[j].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
                 {
                     spectateTarget = readOnlyInstancesList[j].gameObject;
-                    if (debugEnabled) PLog("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
-                    UpdateHUD();
-                    CancelInvoke("ChangeNextTarget");
-                    CancelInvoke("ChangePreviousTarget");
+                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
             }
@@ -671,177 +923,21 @@ namespace Providirector
             int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
             for (int i = num - 1; i >= 0; i--)
             {
-                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
+                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[i].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
                 {
                     spectateTarget = readOnlyInstancesList[i].gameObject;
-                    if (debugEnabled) PLog("Now spectating {0} on team {1}", readOnlyInstancesList[i].name, readOnlyInstancesList[i].teamComponent.teamIndex);
-                    UpdateHUD();
-                    CancelInvoke("ChangeNextTarget");
-                    CancelInvoke("ChangePreviousTarget");
+                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
             }
             for (int j = readOnlyInstancesList.Count - 1; j >= num; j--)
             {
-                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
+                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[j].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
                 {
                     spectateTarget = readOnlyInstancesList[j].gameObject;
-                    if (debugEnabled) PLog("Now spectating {0} on team {1}", readOnlyInstancesList[j].name, readOnlyInstancesList[j].teamComponent.teamIndex);
-                    UpdateHUD();
-                    CancelInvoke("ChangeNextTarget");
-                    CancelInvoke("ChangePreviousTarget");
+                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
-            }
-        }
-
-        private void UpdateHUD()
-        {
-            if (spectateTarget && targetHealthbar) targetHealthbar.source = spectateTarget.GetComponent<CharacterBody>().healthComponent;
-            if (spectateTarget && spectateLabel) spectateLabel.text = Util.GetBestBodyName(spectateTarget);
-
-        }
-
-        private void AddPlayerControl(CharacterMaster c)
-        {
-            if (!haveControlAuthority)
-            {
-                PLog("AddPlayerControl called on client. Cancelling.");
-                return;
-            }
-            if (c == null || c == currentMaster)
-            {
-                PLog(LogLevel.Warning, "Attempt to switch control onto a nonexistent or already present character!");
-                return;
-            }
-            if (!directorUser)
-            {
-                PLog("Attempt to call AddPlayerControl without established DU");
-                return;
-            }
-            PLog("Attempting to take control of CharacterMaster {0}", c.name);
-            if (currentMaster) DisengagePlayerControl(revertfallback: false);
-            else PLog("No currently set master - we can proceed as normal.");
-            currentMaster = c;
-            currentAI = currentMaster.GetComponent<BaseAI>();
-            currentMaster.playerCharacterMasterController = currentMaster.GetComponent<PlayerCharacterMasterController>();
-            PlayerStatsComponent playerStatsComponent = currentMaster.GetComponent<PlayerStatsComponent>();
-            if (!currentController)
-            {
-                PLog(LogLevel.Warning, "CharacterMaster {0} does not have a PCMC! Instantiating one now... though this will lead to desyncs between the client and server.", c.name);
-                currentMaster.playerCharacterMasterController = c.gameObject.AddComponent<PlayerCharacterMasterController>();
-            }
-            if (!playerStatsComponent)
-            {
-                PLog(LogLevel.Warning, "CharacterMaster {0} does not have a PSC! Instantiating one now... though this will lead to desyncs between the client and server.", c.name);
-                playerStatsComponent = c.gameObject.AddComponent<PlayerStatsComponent>();
-            }
-            GameObject oldprefab = c.bodyPrefab;
-            currentController.LinkToNetworkUserServer(directorUser);
-            currentController.master.bodyPrefab = oldprefab; // RESET
-            currentMaster.preventGameOver = false;
-            currentController.enabled = true;
-            playerStatsComponent.enabled = true;
-            Run.instance.userMasters[directorUser.id] = c;
-            AIDisable();
-            if (currentAI) currentAI.onBodyDiscovered += AIDisable;
-            currentMaster.onBodyDeath.AddListener(onNewMasterDeath);
-            currentMaster.onBodyStart += delegate(CharacterBody b) {
-                b.master.preventGameOver = false;
-            };
-            SendSingleGeneric(directorUser.connectionToClient, MessageType.ModeUpdate, currentMaster == defaultMaster);
-            SendSingleGeneric(directorUser.connectionToClient, MessageType.FPUpdate, forceScriptEncounterAddControl);
-
-
-            PLog("{0} set as new master.", currentMaster);
-            void onNewMasterDeath()
-            {
-                currentMaster.onBodyDeath.RemoveListener(onNewMasterDeath);
-                PLog("Current Master has died, checking if we should disengage.");
-                if (currentMaster.IsDeadAndOutOfLivesServer())
-                {
-                    DisengagePlayerControl();
-                }
-                else PLog("No need to disengage, we have a pending revive.");
-            }
-        }
-
-        private void DisengagePlayerControl(bool revertfallback = true)
-        {
-            if (!NetworkServer.active)
-            {
-                PLog("DisengagePlayerControl called on client. Cancelling.");
-                return;
-            }
-            PLog("Disengaging player control from {0}...", currentMaster);
-            if (currentMaster)
-            {
-                if (currentMaster != defaultMaster)
-                {
-                    PLog("Non-default character, performing special remove...");
-                    if (currentAI) currentAI.onBodyDiscovered -= AIDisable;
-                    AIEnable();
-                    currentAI = null;
-                    if (currentBody && currentBody.networkIdentity) currentBody.networkIdentity.RemoveClientAuthority(directorUser.connectionToClient);
-                    currentMaster.playerCharacterMasterController = null;
-                }
-                if (currentController) currentController.enabled = false;
-                PLog("Characterbody disengaged! There are now {0} active PCMCs", PlayerCharacterMasterController.instances.Count);
-                currentMaster = null;
-            }
-            if (revertfallback)
-            {
-                if (currentSquad)
-                {
-                    PLog("Swapping to next active master in current squad...");
-                    foreach (CharacterMaster candidate in currentSquad.readOnlyMembersList)
-                    {
-                        if (!candidate.IsDeadAndOutOfLivesServer())
-                        {
-                            AddPlayerControl(candidate);
-                            return;
-                        }
-                    }
-                    PLog("No alive candidates. Proceeding.");
-                }
-                PLog("Reverting to default master...");
-                AddPlayerControl(defaultMaster);
-            }
-        }
-
-        private void AIDisable()
-        {
-            if (!NetworkServer.active)
-            {
-                PLog("AIDisable called on client. Cancelling.");
-                return;
-            }
-            if (currentAI)
-            {
-                if (currentBody) currentAI.OnBodyLost(currentBody);
-                currentAI.enabled = false;
-                //Debug.Log("AI Disabled.");
-            }
-            else
-            {
-                Debug.LogWarning("Warning: No AI component to disable.");
-            }
-        }
-
-        private void AIDisable(CharacterBody _) { AIDisable(); }
-        
-        private void AIEnable()
-        {
-            if (!NetworkServer.active)
-            {
-                PLog("AIEnable called on client. Cancelling.");
-                return;
-            }
-            if (currentAI)
-            {
-                currentAI.enabled = true;
-                if (currentBody) currentAI.OnBodyStart(currentBody);
-                //Debug.Log("AI Enabled.");
             }
         }
 
@@ -853,22 +949,25 @@ namespace Providirector
             }
         }
 
-        private IEnumerator SetFirstPersonClient(bool state)
+        private IEnumerator SetFirstPersonClient(bool state, float delay = 0f)
         {
             if (!(runIsActive && directorIsLocal)) yield break;
-            PLog("SetFirstPersonClient called.");
-            
-            while (!directorUser.GetCurrentBody())
+            // PLog("SetFirstPersonClient called.");
+
+            while (!(directorUser.GetCurrentBody() && clientDefaultMaster && directorUser.GetCurrentBody() != clientDefaultMaster.GetBody()))
             {
-                PLog("Could not find current body for DirectorUser. Retrying in 0.2s...");
-                yield return new WaitForSeconds(0.2f);
+                PLog("Could not find non-default body for DirectorUser. Retrying in 0.1s...");
+                if (!(runIsActive && directorIsLocal && !activeHud.activeSelf)) yield break;
+                yield return new WaitForSeconds(0.1f);
             }
             GameObject bodyObject = directorUser.GetCurrentBody().gameObject;
-            PLog("First Person change target: {0}", bodyObject.name);
+            // PLog("First Person change target: {0}", bodyObject.name);
+            bodyObject.GetComponent<NetworkIdentity>().localPlayerAuthority = true;
+            SendSingleGeneric(directorUser.connectionToServer, MessageType.RequestBodyResync, true);
             if (state)
             {
-                PLog("Waiting 11 seconds...");
-                yield return new WaitForSeconds(11f);
+                // PLog("Waiting 5 seconds...");
+                yield return new WaitForSeconds(delay);
                 if (fpHandle.isValid)
                 {
                     bodyObject.GetComponent<CameraTargetParams>().RemoveParamsOverride(fpHandle);
@@ -891,11 +990,522 @@ namespace Providirector
             }
         }
 
-        // Network Communicators
+        private IEnumerator MoveCollisionAttempt(Vector3 position, string intendedSceneName) // Must be called on the end of the director
+        {
+            if (!(runIsActive && directorIsLocal))
+            {
+                PLog("Run is not active, or the director is not local. Cancelling the move collision attempt.");
+                yield break;
+            }
+            while (!(clientDefaultMaster && NetworkManager.networkSceneName.Equals(intendedSceneName) && clientDefaultMaster.GetBodyObject() && Run.instance.livingPlayerCount >= NetworkUser.readOnlyInstancesList.Count))
+            {
+                PLog("Cannot move yet. Scene {0}, CDM {1}, Players {2}/{3}", NetworkManager.networkSceneName, clientDefaultMaster == null ? "null" : clientDefaultMaster, Run.instance.livingPlayerCount, NetworkUser.readOnlyInstancesList.Count);
+                yield return new WaitForSeconds(1f);
+            }
+            GameObject g = clientDefaultMaster.GetBodyObject();
+            TeleportHelper.TeleportGameObject(g, position);
+            PLog("Moved {0} MoveCollisionAttempt --> {1} (in {2})", clientDefaultMaster, position, NetworkManager.networkSceneName);
+        }
+        #endregion
+
+        #region Universal Methods
+
+        private void GlobalStageStart(Stage obj)
+        {
+            if (!runIsActive) return;
+            string sceneName = obj.sceneDef.baseSceneName;
+            if (sceneName.Equals("arena"))
+            {
+                Debug.Log("Void Field setup called");
+                if (clientModeDirector)
+                {
+                    clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
+                    ClientState.spawnableCharacters.Clear();
+                }
+                
+            }
+        }
+
+        private void TryInterceptMasterTP(On.RoR2.MapZone.orig_TryZoneStart orig, MapZone self, Collider other)
+        {
+            if (!runIsActive) { orig(self, other); return; }
+            CharacterMaster master = other.GetComponent<CharacterBody>()?.master;
+            if ((master == clientDefaultMaster || master == currentMaster) && newCharacterMasterSpawnGrace > 0)
+            {
+                PLog("Cancelling Zone Start for current master.");
+            }
+            else orig(self, other);
+        }
+
+        private void Run_BeginGameOver(On.RoR2.Run.orig_BeginGameOver orig, Run self, GameEndingDef gameEndingDef)
+        {
+            if (debugEnabled && runIsActive && !gameEndingDef.isWin) return;
+            orig(self, gameEndingDef);
+            if (runIsActive) Run_onRunDestroyGlobal(self);
+        }
+
+        private void Run_onRunDestroyGlobal(Run obj)
+        {
+            if (activeHud) Destroy(activeHud);
+            if (activeServerDirectorObject) Destroy(activeServerDirectorObject);
+            if (activeClientDirectorObject) Destroy(activeClientDirectorObject);
+            activeClientDirectorObject = null;
+            clientModeDirector = null;
+            activeServerDirectorObject = null;
+            serverModeDirector = null;
+            activeHud = null;
+            runIsActive = false;
+            spectateTarget = null;
+            currentMaster = null;
+            defaultMaster = null;
+            clientDefaultMaster = null;
+            currentDirectorConfig = null;
+            if (panel) Destroy(panel);
+            panel = null;
+        }
+
+        private void RoR2Application_onUpdate()
+        {
+            if (!runIsActive) return;
+            InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
+            InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
+            InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
+            InputManager.Slot3.PushState(Input.GetKey(KeyCode.Alpha3));
+            InputManager.Slot4.PushState(Input.GetKey(KeyCode.Alpha4));
+            InputManager.Slot5.PushState(Input.GetKey(KeyCode.Alpha5));
+            InputManager.Slot6.PushState(Input.GetKey(KeyCode.Alpha6));
+            InputManager.DebugSpawn.PushState(Input.GetKey(KeyCode.Alpha0));
+            InputManager.BoostTarget.PushState(Input.GetKey(KeyCode.B));
+            InputManager.ToggleAffixCommon.PushState(Input.GetKey(KeyCode.C));
+            InputManager.ToggleAffixRare.PushState(Input.GetKey(KeyCode.V));
+            InputManager.NextTarget.PushState(Input.GetKey(KeyCode.Mouse0));
+            InputManager.PrevTarget.PushState(Input.GetKey(KeyCode.Mouse1));
+            InputManager.FocusTarget.PushState(Input.GetKey(KeyCode.F));
+            InputManager.ToggleHUD.PushState(Input.GetKey(KeyCode.Y));
+            Vector3 pos = Vector3.zero;
+            Quaternion rot = Quaternion.identity;
+            if (directorUser && mainCamera)
+            {
+                pos = mainCamera.sceneCam.transform.position;
+                rot = mainCamera.sceneCam.transform.rotation;
+                pos += rot * new Vector3(0, 0, 5);
+                
+            }
+
+            if (newCharacterMasterSpawnGrace > 0) newCharacterMasterSpawnGrace -= Time.deltaTime;
+            else newCharacterMasterSpawnGrace = 0;
+            bool honorenabled = RunArtifactManager.instance.IsArtifactEnabled(RoR2Content.Artifacts.EliteOnly);
+
+#if DEBUG
+            if (panel && InputManager.DebugSpawn.justPressed) panel.gameObject.SetActive(!panel.gameObject.activeSelf);
+#endif
+            if (serverModeDirector)
+            {
+                relockTargetServerTimer -= Time.deltaTime;
+                if (relockTargetServerTimer < 0)
+                {
+                    relockTargetServerTimer = 4f;
+                    RelockFocus();
+                }
+            }
+
+            if (clientModeDirector == null) return;
+
+            if (spectateTarget == null) ChangeNextTarget();
+
+            // Only Local Effects
+
+            if ((localUser.eventSystem && localUser.eventSystem.isCursorVisible) || !activeHud.activeSelf) return;
+
+            if (InputManager.ToggleAffixRare.down) clientModeDirector.eliteTierIndex = EliteTierIndex.Tier2;
+            else if (InputManager.ToggleAffixCommon.down && !honorenabled) clientModeDirector.eliteTierIndex = EliteTierIndex.Tier1;
+            else if (honorenabled) clientModeDirector.eliteTierIndex = EliteTierIndex.Honor1;
+            else clientModeDirector.eliteTierIndex = EliteTierIndex.Normal;
+
+            if (InputManager.NextTarget.justPressed) ChangeNextTarget();
+            if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
+            if (InputManager.SwapPage.justPressed) clientModeDirector.secondPage = !clientModeDirector.secondPage;
+
+            // Server interference required
+            if (InputManager.Slot1.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(0), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.Slot2.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(1), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.Slot3.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(2), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.Slot4.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(3), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.Slot5.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(4), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.Slot6.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(5), clientModeDirector.eliteTierIndex, pos, rot);
+            if (InputManager.FocusTarget.justPressed)
+            {
+                CharacterMaster target = spectateTargetMaster.GetComponent<CharacterMaster>();
+                if (clientModeDirector.ActivateFocus(target))
+                {
+                    if (clientModeDirector) clientModeDirector.focusTarget = target;
+                    SendFocusCommand(localToServerConnection, target);
+                }
+            }
+            if (InputManager.BoostTarget.justPressed) SendBurstCommand(localToServerConnection);
+
+            if (!(haveControlAuthority && directorUser)) return;
+
+        }
+
+        private void RelockFocus()
+        {
+            if (focusTargetPersistent == null) return;
+            CharacterMaster victim = focusTargetPersistent.GetComponent<CharacterBody>()?.master;
+            if (victim == null) return;
+            foreach (TeamComponent tc in TeamComponent.GetTeamMembers(TeamIndex.Monster))
+            {
+                CharacterMaster c = tc.body.master;
+                if (victim == c) continue;
+                foreach (BaseAI ai in c.aiComponents)
+                {
+                    ai.currentEnemy.gameObject = focusTargetPersistent;
+                    ai.enemyAttentionDuration = 10f;
+                }
+            }
+        }
+        #endregion
+
+        #region Network Receive
+        private void LogServerMessageHandlers()
+        {
+            // Additional because apparently our thing doesn't register
+            NetworkServer.RegisterHandler(prvdChannel, HandleCommsServer);
+            PLog("Providirector Server Message Handler registered on channel {0}", prvdChannel);
+
+        }
+
+        private void LogClientMessageHandlers(NetworkClient client)
+        {
+            client.RegisterHandler(prvdChannel, HandleCommsClient);
+            PLog("Providirector Client Message Handler registered on channel {0}", prvdChannel);
+        }
+
+        public static MessageSubIdentifier ReadHeader(NetworkReader reader)
+        {
+            return reader.ReadMessage<MessageSubIdentifier>();
+        }
+
+        public void HandleCommsClient(NetworkMessage msg)
+        {
+            MessageSubIdentifier header = ReadHeader(msg.reader);
+            // PLog("Client Received Message {0}: {1}", header.type, header.booleanValue);
+            switch (header.type)
+            {
+                case MessageType.Handshake:
+                    HandleHandshakeClient(msg, header);
+                    break;
+                case MessageType.Burst:
+                    HandleBurstClient(msg, header);
+                    break;
+                case MessageType.SpawnEnemy:
+                    HandleSpawnClient(msg, header);
+                    break;
+                case MessageType.GameStart:
+                    HandleGameStartClient(msg, header);
+                    break;
+                case MessageType.ModeUpdate:
+                    // PLog("Mode update received: {0}", header.booleanValue);
+                    ToggleHUD(header.booleanValue);
+                    SetBaseUIVisible(!header.booleanValue);
+                    break;
+                case MessageType.FPUpdate:
+                    // PLog("Starting FPUpdate Coroutine");
+                    StartCoroutine(SetFirstPersonClient(header.booleanValue, 5f));
+                    break;
+                case MessageType.DirectorSync:
+                    // PLog("Syncing director config for client");
+                    currentDirectorConfig = msg.reader.ReadMessage<SyncDirector>();
+                    break;
+                case MessageType.MovePosition:
+                    var data = msg.reader.ReadMessage<MovePosition>();
+                    if (directorIsLocal) StartCoroutine(MoveCollisionAttempt(data.position, data.intendedSceneName));
+                    break;
+                case MessageType.VoidFieldDirectorSync:
+                    // PLog("Syncing Void Fields");
+                    VoidFieldCardSync sync = msg.reader.ReadMessage<VoidFieldCardSync>();
+                    VFStateUpdate(header.booleanValue, sync);
+                    break;
+                case MessageType.NotifyNewMaster:
+                    CharacterMaster newm = msg.reader.ReadMessage<NotifyNewMaster>().target;
+                    // PLog("Client hooking into new master {0}", newm ? newm : "null");
+                    clientDefaultMaster.playerCharacterMasterController.master = newm;
+                    newm.playerCharacterMasterController = clientDefaultMaster.playerCharacterMasterController;
+                    newm.playerStatsComponent = clientDefaultMaster.playerStatsComponent;
+                    directorUser.masterObject = newm.gameObject;
+                    newCharacterMasterSpawnGrace = gracePeriodLength; // Grace period begins
+                    break;
+                    
+                default:
+                    // PLog("Client: Invalid Message Received (Msg Subtype {0})", (int)header.type);
+                    break;
+            }
+        }
+
+        public void HandleCommsServer(NetworkMessage msg)
+        {
+            MessageSubIdentifier header = ReadHeader(msg.reader);
+            // PLog("Server Received Message {0}: {1}", header.type, header.booleanValue);
+            switch (header.type)
+            {
+                case MessageType.HandshakeResponse:
+                    HandleHandshakeServer(msg, header);
+                    break;
+                case MessageType.DirectorSync:
+                    // PLog("Syncing director config for server");
+                    currentDirectorConfig = msg.reader.ReadMessage<SyncDirector>();
+                    break;
+                case MessageType.Burst:
+                    HandleBurstServer(msg, header);
+                    break;
+                case MessageType.SpawnEnemy:
+                    HandleSpawnServer(msg, header);
+                    break;
+                case MessageType.FocusEnemy:
+                    HandleFocusServer(msg, header);
+                    break;
+                case MessageType.RequestBodyResync:
+                    if (currentMaster)
+                    {
+                        // PLog("Current master is set, sending body resync");
+                        if (currentMaster.GetBodyObject()) StartCoroutine(SetBodyAuthorityPersistent(currentMaster.GetBodyObject()));
+                        currentMaster.onBodyStart += OnBodyFound;
+                    }
+                    break;
+                case MessageType.VoidRaidOnDeath:
+                    VoidRaidGauntletUpdate vrgu = msg.reader.ReadMessage<VoidRaidGauntletUpdate>();
+                    VoidRaidGauntletController.instance?.TryOpenGauntlet(vrgu.position, vrgu.nid);
+                    break;
+                case MessageType.CachedCredits:
+                    if (CombatDirector.instancesList.Count > 0)
+                    {
+                        float transferCredits = 0.4f * header.returnValue;
+                        CombatDirector combatDirector = CombatDirector.instancesList[0];
+                        combatDirector.monsterCredit += transferCredits;
+                        PLog("Sent {0} unused monster credits to the first director", transferCredits);
+                    }
+                    break;
+                default:
+                    // PLog("Server: Invalid Message Received (Msg Subtype {0})", (int)header.type);
+                    break;
+            }
+            void OnBodyFound(CharacterBody c)
+            {
+                StartCoroutine(SetBodyAuthorityPersistent(c.gameObject));
+                c.master.onBodyStart -= OnBodyFound;
+            }
+        }
+
+        public void HandleGameStartClient(NetworkMessage msg, MessageSubIdentifier header)
+        {
+            GameStart gs = msg.ReadMessage<GameStart>();
+            runIsActive = true;
+            directorUser = gs.user;
+        }
+
+        public void HandleHandshakeClient(NetworkMessage msg, MessageSubIdentifier sid)
+        {
+            if (!NetworkServer.active) directorUser = sid.booleanValue && modEnabled ? localUser.currentNetworkUser : null;
+            if (sid.booleanValue) SendSingleGeneric(msg.conn, MessageType.HandshakeResponse, modEnabled);
+        }
+
+        public void HandleHandshakeServer(NetworkMessage msg, MessageSubIdentifier sid)
+        {
+            NetworkUser toChange = null;
+            foreach (NetworkUser u in NetworkUser.instancesList)
+            {
+                PLog("{0}: {1}", u.GetNetworkPlayerName().GetResolvedName(), u.connectionToClient.address);
+                if (u.connectionToClient == msg.conn)
+                {
+                    PLog("Director identified as {0}", u.GetNetworkPlayerName().GetResolvedName());
+                    toChange = u;
+                    break;
+                }
+            }
+            if (sid.booleanValue)
+            {
+                if (toChange != null)
+                {
+                    if (directorUser) SendSingleGeneric(directorUser.connectionToClient, MessageType.Handshake, false);
+                    directorUser = toChange;
+                    Chat.SendBroadcastChat(new Chat.SimpleChatMessage()
+                    {
+                        baseToken = String.Format("Providirector -- Director response OK, set to {0}", directorUser.GetNetworkPlayerName().GetResolvedName())
+                    });
+                    foreach (NetworkUser nu in NetworkUser.instancesList)
+                    {
+                        if (nu != directorUser) SendSingleGeneric(nu.connectionToClient, MessageType.Handshake, false);
+                    }
+                }
+                else PLog("Error: Cannot find NetworkUser associated with connection {0}", msg.conn.connectionId);
+            }
+            else
+            {
+                PLog("RECEIVE Director Refusal");
+                if (toChange == directorUser)
+                {
+                    directorUser = null;
+                }
+            }
+        }
+
+        public void HandleSpawnClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
+        {
+            var k = msg.reader.ReadMessage<SpawnConfirm>();
+            clientModeDirector.DoPurchaseTrigger(k.cost, k.spawned);
+        }
+
+        public void HandleSpawnServer(NetworkMessage msg, MessageSubIdentifier sid)
+        {
+            SpawnEnemy request = msg.reader.ReadMessage<SpawnEnemy>();
+            if (request != null)
+            {
+                NetworkWriter writer = new NetworkWriter();
+                writer.StartMessage(prvdChannel);
+                writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
+                bool result = serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, request.eliteClassIndex, out CharacterMaster spawned, out int cost);
+                // PLog("Server Spawn Result: {0}", result);
+                writer.Write(new SpawnConfirm()
+                {
+                    cost = cost,
+                    spawned = spawned
+                });
+                writer.FinishMessage();
+                msg.conn?.SendWriter(writer, Channels.DefaultReliable);
+            }
+        }
+
+        public void HandleBurstClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
+        {
+            clientModeDirector.DoBurstTrigger(sid.booleanValue);
+        }
+
+        public void HandleBurstServer(NetworkMessage msg, MessageSubIdentifier sid)
+        {
+            SendSingleGeneric(msg.conn, MessageType.Burst, serverModeDirector.ActivateBurst());
+        }
+
+        public void HandleFocusServer(NetworkMessage msg, MessageSubIdentifier sid)
+        {
+            FocusEnemy focusEnemy = msg.reader.ReadMessage<FocusEnemy>();
+            if (focusEnemy.target)
+            {
+                focusTargetPersistent = focusEnemy.target.bodyInstanceObject;
+                RelockFocus();
+            }
+            else
+            {
+                // PLog("Received invalid focus target. Cancelling.");
+            }
+        }
+
+        private void VFStateUpdate(bool state, VoidFieldCardSync sync)
+        {
+            if (!(runIsActive && clientModeDirector)) return;
+            ClientState.spawnableCharacters.Clear();
+            if (state)
+            {
+                clientModeDirector.rateModifier = ClientState.RateModifier.TeleporterBoosted;
+                PLog("{0} Cards to sync", sync.cardDisplayDatas);
+                foreach (SpawnCardDisplayData card in sync.cardDisplayDatas) ClientState.spawnableCharacters.Add(card);
+            }
+            else clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
+        }
+        #endregion
+
+        #region Network Send
+        public static void SendSingleGeneric(NetworkConnection connection, MessageType subtype, uint value)
+        {
+            NetworkWriter writer = new NetworkWriter();
+            writer.StartMessage(prvdChannel);
+            writer.Write(new MessageSubIdentifier { returnValue = value, type = subtype});
+            writer.FinishMessage();
+            connection?.SendWriter(writer, Channels.DefaultReliable); // Default Reliable Channel - nothing fancy
+        }
+
+        public static void SendSingleGeneric(NetworkConnection connection, MessageType subtype, bool value)
+        {
+            SendSingleGeneric(connection, subtype, value ? (uint)1 : 0);
+        }
+
+        public void SendNetMessageSingle(NetworkConnection connection, MessageType type, uint value, MessageBase message)
+        {
+            NetworkWriter writer = new NetworkWriter();
+            writer.StartMessage(prvdChannel);
+            writer.Write(new MessageSubIdentifier()
+            {
+                returnValue = value,
+                type = type
+            });
+            writer.Write(message);
+            writer.FinishMessage();
+            connection?.SendWriter(writer, Channels.DefaultReliable);
+        }
+
+        public bool SendSpawnCommand(NetworkConnection connection, int slotIndex, EliteTierIndex eliteClassIndex, Vector3 position, Quaternion rotation)
+        {
+            if (!clientModeDirector.IsAbleToSpawn(slotIndex, position, rotation, out int _, eliteIndexOverride: eliteClassIndex)) return false;
+            NetworkWriter writer = new NetworkWriter();
+            writer.StartMessage(prvdChannel);
+            writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
+            writer.Write(new SpawnEnemy()
+            {
+                slotIndex = slotIndex,
+                eliteClassIndex = eliteClassIndex,
+                position = position,
+                rotation = rotation
+            });
+            writer.FinishMessage();
+            connection?.SendWriter(writer, Channels.DefaultReliable);
+            return true;
+        }
+
+        public void SendBurstCommand(NetworkConnection connection)
+        {
+            if (!clientModeDirector.canBurst)
+            {
+                clientModeDirector.DoBurstTrigger(false);
+                return;
+            }
+            SendSingleGeneric(connection, MessageType.Burst, true);
+        }
+
+        public void SendFocusCommand(NetworkConnection connection, CharacterMaster target)
+        {
+            // PLog("Send Focus Command! {0}", target);
+            if (target == null) return;
+            NetworkWriter writer = new NetworkWriter();
+            writer.StartMessage(prvdChannel);
+            writer.Write(new MessageSubIdentifier { type = MessageType.FocusEnemy });
+            writer.Write(new FocusEnemy()
+            {
+                target = target
+            });
+            writer.FinishMessage();
+            connection?.SendWriter(writer, Channels.DefaultReliable);
+        }
+
+        public IEnumerator SendPositionUpdate(Vector3 position, string intendedSceneName, float delay = 0)
+        {
+            if (!(directorUser && haveControlAuthority))
+            {
+                PLog("Unable to send position update as either no directorUser is set or we don't have server permissions");
+                yield break;
+            }
+            if (delay > 0) yield return new WaitForSeconds(delay);
+            SendNetMessageSingle(directorUser.connectionToClient, MessageType.MovePosition, 1, new MovePosition()
+            {
+                position = position,
+                intendedSceneName = intendedSceneName
+            });
+        }
+        #endregion
+
+        #region Network Util and Implement
         private void InterpretDirectorCommand(On.RoR2.Chat.orig_CCSay orig, ConCommandArgs args)
         {
             orig(args);
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || runIsActive) return;
             if (args.sender == localUser.currentNetworkUser)
             {
                 string text = args[0];
@@ -906,7 +1516,7 @@ namespace Providirector
                     {
                         Chat.SendBroadcastChat(new Chat.SimpleChatMessage()
                         {
-                            baseToken = String.Format("Providirector -- Use '% [name]' to set the director. Default is the host.")
+                            baseToken = string.Format("Providirector -- Use '% [name]' to set the director. Default is the host.")
                         });
                         return;
                     }
@@ -925,262 +1535,17 @@ namespace Providirector
                     {
                         Chat.SendBroadcastChat(new Chat.SimpleChatMessage()
                         {
-                            baseToken = String.Format("Providirector -- Error - player name or NU Index {0} not found", targetUser)
+                            baseToken = string.Format("Providirector -- Error - player name or NU Index {0} not found", targetUser)
                         });
                         return;
                     }
                     NetworkUser targetnu = NetworkUser.instancesList[index];
-                    ServerSendHandshake(targetnu.connectionToClient);
+                    SendSingleGeneric(targetnu.connectionToClient, MessageType.Handshake, true);
                     Chat.SendBroadcastChat(new Chat.SimpleChatMessage()
                     {
-                        baseToken = String.Format("Providirector -- Sent director request to {0}", targetnu.GetNetworkPlayerName().GetResolvedName())
+                        baseToken = string.Format("Providirector -- Sent director request to {0}", targetnu.GetNetworkPlayerName().GetResolvedName())
                     });
                 }
-            }
-        }
-
-        public static void SendSingleGeneric(NetworkConnection connection, MessageType subtype, float value)
-        {
-            NetworkWriter writer = new NetworkWriter();
-            writer.StartMessage(prvdChannel);
-            writer.Write(new MessageSubIdentifier { returnValue = value, type = subtype});
-            writer.FinishMessage();
-            connection?.SendWriter(writer, 0); // Default Reliable Channel - nothing fancy
-        }
-
-        
-        public static void SendSingleGeneric(NetworkConnection connection, MessageType subtype, bool value)
-        {
-            SendSingleGeneric(connection, subtype, value ? 1f : -1f);
-        }
-
-        public static MessageSubIdentifier ReadHeader(NetworkReader reader)
-        {
-            return reader.ReadMessage<MessageSubIdentifier>();
-        }
-
-        public void HandleCommsClient(NetworkMessage msg)
-        {
-            MessageSubIdentifier header = ReadHeader(msg.reader);
-            PLog("Client Received Message {0}: {1}", header.type, header.booleanValue);
-            switch (header.type)
-            {
-                case MessageType.Handshake:
-                    HandleHandshakeClient(msg, header);
-                    break;
-                case MessageType.Burst:
-                    HandleBurstClient(msg, header);
-                    break;
-                case MessageType.SpawnEnemy:
-                    HandleSpawnClient(msg, header);
-                    break;
-                case MessageType.GameStart:
-                    runIsActive = true;
-                    directorUser = header.booleanValue ? localUser.currentNetworkUser : null;
-                    break;
-                case MessageType.ModeUpdate:
-                    PLog("Mode update received: {0}", header.booleanValue);
-                    ToggleHUD(header.booleanValue);
-                    SetBaseUIVisible(!header.booleanValue);
-                    isInPlayerControlMode = !header.booleanValue;
-                    break;
-                case MessageType.FPUpdate:
-                    PLog("Starting FPUpdate Coroutine");
-                    StartCoroutine(SetFirstPersonClient(header.booleanValue));
-                    break;
-                default:
-                    PLog("Client: Invalid Message Received (Msg Subtype {0})", (int)header.type);
-                    break;
-            }
-        }
-
-        public void HandleCommsServer(NetworkMessage msg)
-        {
-            MessageSubIdentifier header = ReadHeader(msg.reader);
-            PLog("Server Received Message {0}: {1}", header.type, header.booleanValue);
-            switch (header.type)
-            {
-                case MessageType.Handshake:
-                    HandleHandshakeServer(msg, header);
-                    break;
-                case MessageType.Burst:
-                    HandleBurstServer(msg, header);
-                    break;
-                case MessageType.SpawnEnemy:
-                    HandleSpawnServer(msg, header);
-                    break;
-                case MessageType.FocusEnemy:
-                    HandleFocusServer(msg, header);
-                    break;
-                default:
-                    PLog("Server: Invalid Message Received (Msg Subtype {0})", (int)header.type);
-                    break;
-            }
-        }
-
-
-        public void ServerSendHandshake(NetworkConnection connection)
-        {
-            if (!NetworkServer.active)
-            {
-                PLog("Can't initiate handshake from client.");
-                return;
-            }
-            SendSingleGeneric(connection, MessageType.Handshake, true);
-        }
-
-        public void HandleHandshakeClient(NetworkMessage msg, MessageSubIdentifier sid)
-        {
-            PLog("RECEIVE Director Update");
-            directorUser = sid.booleanValue && modEnabled ? localUser.currentNetworkUser : null;
-            SendSingleGeneric(msg.conn, MessageType.Handshake, modEnabled);
-        }
-
-        public void HandleHandshakeServer(NetworkMessage msg, MessageSubIdentifier sid)
-        {
-            if (sid.booleanValue)
-            {
-                PLog("RECEIVE Director Confirmation on connection {0}", msg.conn.address);
-                NetworkUser toChange = null;
-                foreach (NetworkUser u in NetworkUser.instancesList)
-                {
-                    PLog("{0}: {1}", u.GetNetworkPlayerName().GetResolvedName(), u.connectionToClient.address);
-                    if (u.connectionToClient == msg.conn)
-                    {
-                        PLog("Director identified as {0}", u.GetNetworkPlayerName().GetResolvedName());
-                        toChange = u;
-                        break;
-                    }
-                }
-                if (toChange != null)
-                {
-                    if (directorUser) SendSingleGeneric(directorUser.connectionToClient, MessageType.Handshake, false);
-                    directorUser = toChange;
-                    Chat.SendBroadcastChat(new Chat.SimpleChatMessage()
-                    {
-                        baseToken = String.Format("Providirector -- Director response OK, set to {0}", directorUser.GetNetworkPlayerName().GetResolvedName())
-                    });
-                }
-                else PLog("Error: Cannot find NetworkUser associated with connection {0}", msg.conn.connectionId);
-            } else
-            {
-                PLog("RECEIVE Director Refusal");
-            }
-        }
-
-        public bool SendSpawnCommand(NetworkConnection connection, int slotIndex, EliteTierIndex eliteClassIndex, Vector3 position, Quaternion rotation)
-        {
-            var result = clientModeDirector.TrySpawn(slotIndex, position, rotation, eliteIndexOverride: eliteClassIndex);
-            if (result.Item1 < 0)
-            {
-                clientModeDirector.DoPurchaseTrigger(-1);
-                return false;
-            }
-            NetworkWriter writer = new NetworkWriter();
-            writer.StartMessage(prvdChannel);
-            writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
-            writer.Write(new SpawnEnemy()
-            {
-                slotIndex = slotIndex,
-                eliteClassIndex = eliteClassIndex,
-                position = position,
-                rotation = rotation
-            });
-            writer.FinishMessage();
-            connection?.SendWriter(writer, prvdChannel);
-            return true;
-        }
-
-        public void HandleSpawnClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
-        {
-            var k = msg.reader.ReadMessage<SpawnConfirm>();
-            clientModeDirector.DoPurchaseTrigger(k.cost, k.spawned);
-        }
-
-        public void HandleSpawnServer(NetworkMessage msg, MessageSubIdentifier sid)
-        {
-            SpawnEnemy request = msg.reader.ReadMessage<SpawnEnemy>();
-            if (request != null)
-            {
-                NetworkWriter writer = new NetworkWriter();
-                writer.StartMessage(prvdChannel);
-                writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
-                try
-                {
-                    var result = serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, eliteIndexOverride: request.eliteClassIndex);
-
-                    writer.Write(new SpawnConfirm()
-                    {
-                        cost = result.Item1,
-                        spawned = result.Item2
-                    });
-                }
-                catch
-                {
-                    writer.Write(new SpawnConfirm()
-                    {
-                        cost = -1f,
-                        spawned = null
-                    });
-                }
-                writer.FinishMessage();
-                msg.conn?.SendWriter(writer, prvdChannel);
-            }
-        }
-
-        public void SendBurstCommand(NetworkConnection connection)
-        {
-            if (!clientModeDirector.ApplyFrenzy())
-            {
-                clientModeDirector.DoBurstTrigger(false);
-                return;
-            }
-            SendSingleGeneric(connection, MessageType.Burst, true);
-        }
-
-        public void HandleBurstClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
-        {
-            clientModeDirector.DoBurstTrigger(sid.booleanValue);
-        }
-
-        public void HandleBurstServer(NetworkMessage msg, MessageSubIdentifier sid)
-        {
-            SendSingleGeneric(msg.conn, MessageType.Burst, serverModeDirector.ApplyFrenzy());
-        }
-
-        public void SendFocusCommand(NetworkConnection connection, CharacterMaster target)
-        {
-            PLog("Send Focus Command! {0}", target);
-            if (target == null) return;
-            NetworkWriter writer = new NetworkWriter();
-            writer.StartMessage(prvdChannel);
-            writer.Write(new MessageSubIdentifier { type = MessageType.FocusEnemy });
-            writer.Write(new FocusEnemy()
-            {
-                target = target
-            });
-            writer.FinishMessage();
-            connection?.SendWriter(writer, prvdChannel);
-        }
-
-        public void HandleFocusServer(NetworkMessage msg, MessageSubIdentifier sid)
-        {
-            FocusEnemy focusEnemy = msg.reader.ReadMessage<FocusEnemy>();
-            if (focusEnemy.target)
-            {
-                foreach (TeamComponent tc in TeamComponent.GetTeamMembers(TeamIndex.Monster))
-                {
-                    CharacterMaster c = tc.body.master;
-                    if (focusEnemy.target == c) continue;
-                    foreach (BaseAI ai in c.aiComponents)
-                    {
-                        ai.currentEnemy.gameObject = focusEnemy.target.bodyInstanceObject;
-                        ai.enemyAttentionDuration = 10f;
-                    }
-                }
-            } else
-            {
-                PLog("Received invalid focus target. Cancelling.");
             }
         }
 
@@ -1188,9 +1553,9 @@ namespace Providirector
         {
             return conn == directorUser?.connectionToClient;
         }
+        #endregion
 
-        // Utility Functions
-
+        #region General Util
         public static void PLog(LogLevel level, string message, params object[] fmt)
         {
             if (instance) instance.Logger.Log(level, String.Format(message, fmt));
@@ -1207,191 +1572,164 @@ namespace Providirector
         {
             if (instance) instance.Logger.Log(LogLevel.Info, message);
         }
+        #endregion
 
-        public void TrySetHUD()
-        {
-            if (!activeHud)
-            {
-                PLog("No HUD to set params for, cancelling.");
-                return;
-            }
-            bool flag = true;
-            if (mainCamera && mainCamera.uiCam) activeHud.GetComponent<Canvas>().worldCamera = mainCamera.uiCam;
-            else
-            {
-                flag = false;
-                PLog("Failed to acquire main camera");
-            }
-            ProvidirectorHUD mainHud = activeHud.GetComponent<ProvidirectorHUD>();
-            if (mainHud)
-            {
-                mainHud.directorState = clientModeDirector;
-                targetHealthbar = mainHud.spectateHealthBar;
-                spectateLabel = mainHud.spectateNameText;
-                targetHealthbar.style = ProvidirectorResources.GenerateHBS();
-                targetHealthbar.Awake();
-            }
-            else
-            {
-                flag = false;
-                PLog("Failed to setup main HUD components");
-            }
-            if (!flag)
-            {
-                PLog("HUD Setup incomplete, retrying in 0.2s");
-                Invoke("TrySetHUD", 0.2f);
-            }
-            else
-            {
-                ToggleHUD(true);
-                SetBaseUIVisible(false);
-                SetFirstPersonClient(false);
-                PLog("HUD setup complete");
-            }
-        }
-
-        // Game Event Triggers
-
-        private Action<CharacterMaster> NewPrespawnSetup(On.RoR2.CharacterSpawnCard.orig_GetPreSpawnSetupCallback orig, CharacterSpawnCard self)
-        {
-            return (CharacterMaster c) =>
-            {
-                PlayerCharacterMasterController cmc = c.GetComponent<PlayerCharacterMasterController>();
-                PlayerStatsComponent psc = c.GetComponent<PlayerStatsComponent>();
-                if (scriptEncounterControlCurrent || forceScriptEncounterAddControl)
-                {
-                    if (!cmc) cmc = c.gameObject.AddComponent<PlayerCharacterMasterController>();
-                    cmc.enabled = false;
-                    if (!psc) c.gameObject.AddComponent<PlayerStatsComponent>();
-                    PLog("Added player controls to {0}", c.name);
-                }
-                orig(self)?.Invoke(c);
-            };
-        }
-
-        private void MithrixPlayerExecute(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnMemberAddedServer orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self, CharacterMaster master)
-        {
-            orig(self, master);
-            if ((self.phaseControllerChildString == "Phase2") || !runIsActive || (defaultMaster != currentMaster)) return;
-            AddPlayerControl(master);
-        }
-
-        private void EscapeSequenceFinish(On.RoR2.EscapeSequenceController.orig_CompleteEscapeSequence orig, EscapeSequenceController self)
-        {
-            orig(self);
-            if (!clientModeDirector) return;
-            clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-        }
-
+        #region Event or Stage-Specific
         private void EncounterFinish(On.EntityStates.Missions.BrotherEncounter.EncounterFinished.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.EncounterFinished self)
         {
             orig(self);
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
+            if (clientModeDirector) clientModeDirector.rateModifier = ClientState.RateModifier.TeleporterBoosted;
         }
 
-        private void Phase3Ready(On.EntityStates.Missions.BrotherEncounter.Phase3.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase3 self)
+        private void BeginMoonPhase(On.EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.BrotherEncounterPhaseBaseState self)
         {
-            orig(self);
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-        }
-
-        private void Phase2Ready(On.EntityStates.Missions.BrotherEncounter.Phase2.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase2 self)
-        {
-            orig(self);
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.TeleporterBoosted;
-        }
-
-        private void Phase1Ready(On.EntityStates.Missions.BrotherEncounter.Phase1.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.Phase1 self)
-        {
-            orig(self);
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-            if (haveControlAuthority) StartCoroutine(MoveCollisionAttempt(false, Vector3.zero));
-        }
-
-        private void SwapTargetAfterDeath(DamageReport obj)
-        {
-            if (!runIsActive) return;
-            if (obj.victimMaster.GetBodyObject() == spectateTarget && clientModeDirector)
+            if (runIsActive)
             {
-                PLog("Current spectator target died, waiting to swap to the next target.");
-                Invoke("ChangeNextTarget", 3);
+                bool characterControlState = self.phaseControllerChildString != "Phase2";
+                if (haveControlAuthority)
+                {
+                    forceScriptEncounterAddControl = characterControlState;
+                    StartCoroutine(SendPositionUpdate(defaultZone, "moon2"));
+                }
+                if (clientModeDirector) clientModeDirector.rateModifier = characterControlState ? ClientState.RateModifier.Locked : ClientState.RateModifier.TeleporterBoosted;
             }
+            orig(self);
         }
 
         private void FieldCardUpdate(On.RoR2.ArenaMissionController.orig_BeginRound orig, ArenaMissionController self)
         {
             orig(self);
-            if (!runIsActive) return;
-            DirectorState.spawnCardTemplates.Clear();
-            foreach (DirectorCard c in self.activeMonsterCards) DirectorState.spawnCardTemplates.Add(c.spawnCard);
-            DirectorState.monsterInv = ArenaMissionController.instance.inventory;
-            clientModeDirector.isDirty = true;
-            clientModeDirector.rateModifier = DirectorState.RateModifier.None;
+            if (runIsActive && directorUser && serverModeDirector)
+            {
+                ServerState.spawnCardTemplates.Clear();
+                var toSend = new SpawnCardDisplayData[ArenaMissionController.instance.activeMonsterCards.Count];
+                int i = 0;
+                foreach (DirectorCard c in ArenaMissionController.instance.activeMonsterCards) {
+                    ServerState.spawnCardTemplates.Add(c.spawnCard);
+                    toSend[i] = ClientState.ExtractDisplayData(c.spawnCard);
+                    i++;
+                }
+                // PLog("AMC contained {0} active monster cards.", ArenaMissionController.instance.activeMonsterCards.Count);
+                DirectorState.monsterInv = ArenaMissionController.instance.inventory;
+                SendNetMessageSingle(directorUser.connectionToClient, MessageType.VoidFieldDirectorSync , 1, new VoidFieldCardSync()
+                {
+                    cardDisplayDatas = toSend
+                });
+                // PLog("Sent VF director sync");
+            } else
+            {
+                PLog("No director User found! Canceling send");
+            }
+            
         }
 
         private void RoundEndLock(On.RoR2.ArenaMissionController.orig_EndRound orig, ArenaMissionController self)
         {
             orig(self);
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-        }
-
-        private void SCEControlGate(On.RoR2.ScriptedCombatEncounter.orig_BeginEncounter orig, ScriptedCombatEncounter self)
-        {
-            if (!runIsActive) { orig(self); return; }
-            if (scriptEncounterControlNext)
+            if (runIsActive && directorUser)
             {
-                scriptEncounterControlNext = false;
-                scriptEncounterControlCurrent = true;
-                currentSquad = self.combatSquad;
-                self.onBeginEncounter += delegate (ScriptedCombatEncounter _) {
-                    scriptEncounterControlCurrent = false;
-                };
-                currentSquad.onDefeatedServer += delegate ()
+                ServerState.spawnCardTemplates.Clear();
+                // PLog("Template List Cleared.");
+                DirectorState.monsterInv = ArenaMissionController.instance.inventory;
+                SendNetMessageSingle(directorUser.connectionToClient, MessageType.VoidFieldDirectorSync, 0, new VoidFieldCardSync()
                 {
-                    PLog("Combat squad defeated, reverting to null");
-                    currentSquad = null;
-                };
+                    cardDisplayDatas = new SpawnCardDisplayData[0]
+                });
+                PLog("Sent VF director sync");
             }
-            orig(self);
+            else
+            {
+                PLog("No director User found! Canceling send");
+            }
         }
 
         private void VoidlingReady(On.RoR2.VoidRaidGauntletController.orig_Start orig, VoidRaidGauntletController self)
         {
             orig(self);
             if (!runIsActive) return;
-            if (clientModeDirector) clientModeDirector.rateModifier = DirectorState.RateModifier.Locked;
-            PLog("VoidRaidGauntletController start, attempting control addition");
+            if (clientModeDirector) clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
             if (haveControlAuthority)
             {
-                StartCoroutine(MoveCollisionAttempt(true, voidlingTriggerZone));
-                foreach (ScriptedCombatEncounter encounter in self.phaseEncounters)
-                {
-                    encounter.combatSquad.onMemberAddedServer += (CharacterMaster c) => {
-                        AddPlayerControl(c);
-                        StartCoroutine(MoveCollisionAttempt(false, Vector3.zero));
-                    };
-                }
+                foreach (ScriptedCombatEncounter sce in self.phaseEncounters)
+                    sce.onBeginEncounter += (ScriptedCombatEncounter _) => StartCoroutine(SendPositionUpdate(defaultZone, "voidraid"));
             }
-            PLog("VoidRaidGauntletController finished additions");
         }
 
-        private void PreEncounterReady(On.EntityStates.Missions.BrotherEncounter.PreEncounter.orig_OnEnter orig, EntityStates.Missions.BrotherEncounter.PreEncounter self)
+        private void MoveToEscapeZone(On.RoR2.HoldoutZoneController.orig_Start orig, HoldoutZoneController self)
+        {
+            // PLog("Holdout zone activated! Token: {0}", self.inBoundsObjectiveToken);
+            orig(self);
+            if (self.inBoundsObjectiveToken.Equals("OBJECTIVE_MOON_CHARGE_DROPSHIP"))
+            {
+                PLog("EscapeSequence now active.");
+                StartCoroutine(SendPositionUpdate(rescueShipTriggerZone, "moon2", 3f));
+            }
+        }
+
+        private void SetVelocityZeroVacuum(On.EntityStates.VoidRaidCrab.BaseVacuumAttackState.orig_OnEnter orig, EntityStates.VoidRaidCrab.BaseVacuumAttackState self)
         {
             orig(self);
-            if (runIsActive && defaultMaster && defaultMaster.GetBodyObject()) defaultMaster.GetBodyObject().layer = LayerIndex.noCollision.intVal;
-            else PLog(LogLevel.Error, "Unable to find the default master for the director!");
+            RigidbodyMotor motor = self.outer.commonComponents.rigidbodyMotor;
+            if (runIsActive && motor && motor.hasEffectiveAuthority) motor.moveVector = Vector3.zero;
         }
 
-        private void MapZone_TeleportBody(On.RoR2.MapZone.orig_TeleportBody orig, MapZone self, CharacterBody characterBody)
+        private void SetVelocityZeroSpin(On.EntityStates.VoidRaidCrab.BaseSpinBeamAttackState.orig_OnEnter orig, EntityStates.VoidRaidCrab.BaseSpinBeamAttackState self)
         {
-            // Special exception
-            if (defaultMaster && characterBody == defaultMaster.GetBody())
+            orig(self);
+            RigidbodyMotor motor = self.outer.commonComponents.rigidbodyMotor;
+            if (runIsActive && motor && motor.hasEffectiveAuthority) motor.moveVector = Vector3.zero;
+        }
+
+        private void DisableDoppelgangerControl(On.RoR2.Artifacts.DoppelgangerInvasionManager.orig_CreateDoppelganger orig, CharacterMaster srcCharacterMaster, Xoroshiro128Plus rng)
+        {
+            bool forceScriptEncounterAddControlCached = forceScriptEncounterAddControl;
+            bool firstPersonEnabledCached = enableFirstPerson;
+            forceScriptEncounterAddControl = false;
+            firstPersonEnabledCached = false;
+            orig(srcCharacterMaster, rng);
+            forceScriptEncounterAddControl = forceScriptEncounterAddControlCached;
+            enableFirstPerson = firstPersonEnabledCached;
+        }
+
+        private void EscapeDeath_FixedUpdate(On.EntityStates.VoidRaidCrab.EscapeDeath.orig_FixedUpdate orig, EntityStates.VoidRaidCrab.EscapeDeath self)
+        {
+            orig(self);
+            if (!self.isAuthority && self.fixedAge >= self.duration && NetworkServer.active)
             {
-                PLog(LogLevel.Warning, "In-zone TP cancelled for the director.");
+                //PLog("Destroying the new body ASAP.");
+                self.DestroyBodyAsapServer();
+            }
+        }
+
+        private void SafeBeginEncounter(On.RoR2.VoidRaidGauntletController.orig_OnBeginEncounter orig, VoidRaidGauntletController self, ScriptedCombatEncounter encounter, int encounterIndex)
+        {
+            if (self.currentDonut == null)
+            {
+                //PLog("No donut currently set. Returning...");
                 return;
             }
-            orig(self, characterBody);
+            while (self.gauntletIndex < encounterIndex)
+            {
+                //PLog("Calling TOG...");
+                self.TryOpenGauntlet(self.currentDonut.crabPosition.position, NetworkInstanceId.Invalid);
+            }
+
         }
+
+        private void SendStartNextDonutMessage(On.EntityStates.VoidRaidCrab.EscapeDeath.orig_OnExit orig, EntityStates.VoidRaidCrab.EscapeDeath self)
+        {
+            orig(self);
+            if (runIsActive && directorIsLocal && !haveControlAuthority)
+            {
+                //PLog("Sending update request for next donut.");
+                SendNetMessageSingle(directorUser.connectionToServer, MessageType.VoidRaidOnDeath, 1, new VoidRaidGauntletUpdate()
+                {
+                    nid = self.netId,
+                    position = self.gauntletEntrancePosition
+                });
+            }
+        }
+
+        #endregion
     }
 }
-

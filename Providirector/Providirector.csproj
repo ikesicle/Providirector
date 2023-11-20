@@ -21,7 +21,7 @@
     <PackageReference Include="MMHOOK.RoR2" Version="2022.9.20">
       <NoWarn>NU1701</NoWarn>
     </PackageReference>
-    <PackageReference Include="R2API" Version="5.0.3" />
+    <PackageReference Include="R2API" Version="5.0.5" />
     <PackageReference Include="BepInEx.Core" Version="5.4.21" />
   </ItemGroup>
   <ItemGroup>
@@ -29,27 +29,24 @@
       <HintPath>RiskOfOptions.dll</HintPath>
     </Reference>
     <Reference Include="ScriptsAssembly">
-      <HintPath>ScriptsAssembly.dll</HintPath>
+      <HintPath>UnityResources\ScriptsAssembly.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
     <None Remove="NetworkCommands\" />
-    <None Remove="monstericons" />
     <None Remove="icon.png" />
     <None Remove="manifest.json" />
     <None Remove="README.md" />
     <None Remove="CHANGELOG.md" />
-    <None Remove="ScriptsAssembly.dll" />
     <None Remove="RiskOfOptions.dll" />
+    <None Remove="UnityResources\monstericons" />
+    <None Remove="UnityResources\monstericons.manifest" />
+    <None Remove="UnityResources\providirectorcore" />
+    <None Remove="UnityResources\providirectorcore.manifest" />
+    <None Remove="UnityResources\ProvidirectorUI.manifest" />
   </ItemGroup>
   <ItemGroup>
     <None Update="providirectorui">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="providirectorcore">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Update="ScriptsAssembly.pdb">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
@@ -57,9 +54,6 @@
     <Folder Include="NetworkCommands\" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="monstericons">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
     <Content Include="icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -72,10 +66,22 @@
     <Content Include="CHANGELOG.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="ScriptsAssembly.dll">
+    <Content Include="RiskOfOptions.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="RiskOfOptions.dll">
+    <Content Include="UnityResources\monstericons">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="UnityResources\monstericons.manifest">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="UnityResources\providirectorcore">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="UnityResources\providirectorcore.manifest">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="UnityResources\ProvidirectorUI.manifest">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

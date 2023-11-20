@@ -1,29 +1,36 @@
-﻿using System;
-using RoR2;
-using UnityEngine.Networking;
+﻿using UnityEngine.Networking;
 namespace Providirector.NetworkCommands
 {
 	public enum MessageType: int
 	{
 		Invalid = -1,
 		Handshake = 0,
-		SpawnEnemy = 1,
-		FocusEnemy = 2,
-		Burst = 3,
-		GameStart = 4,
-		ModeUpdate = 5,
-		FPUpdate = 6
+		HandshakeResponse = 1,
+		SpawnEnemy = 2,
+		FocusEnemy = 3,
+		Burst = 4,
+		GameStart = 5,
+		ModeUpdate = 6,
+		FPUpdate = 7,
+		DirectorSync = 8,
+		MovePosition = 9,
+		VoidFieldDirectorSync = 10,
+		NotifyNewMaster = 11,
+		RequestBodyResync = 12,
+		VoidRaidOnDeath = 13,
+		FogSafeZone = 14,
+		CachedCredits = 15
 	}
 	public class MessageSubIdentifier: MessageBase
 	{
 		public MessageType type = MessageType.Invalid;
-		public float returnValue = -1;
-		public bool booleanValue => returnValue >= 0;
+		public uint returnValue = 1;
+		public bool booleanValue => returnValue != 0;
 
         public override void Deserialize(NetworkReader reader)
         {
 			type = (MessageType)reader.ReadInt32();
-			returnValue = reader.ReadSingle();
+			returnValue = reader.ReadUInt32();
         }
 
         public override void Serialize(NetworkWriter writer)

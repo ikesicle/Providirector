@@ -1,7 +1,4 @@
-﻿using System;
-using ProvidirectorGame;
-using UnityEngine;
-using RoR2;
+﻿using RoR2;
 using UnityEngine.Networking;
 namespace Providirector.NetworkCommands
 {
@@ -13,16 +10,20 @@ namespace Providirector.NetworkCommands
         public override void Deserialize(NetworkReader reader)
         {
             cost = reader.ReadSingle();
-            var obj = reader.ReadGameObject();
-            if (obj) spawned = obj.GetComponent<CharacterMaster>();
+            bool spawnedExists = reader.ReadBoolean();
+            if (spawnedExists) spawned = reader.ReadGameObject().GetComponent<CharacterMaster>();
             else spawned = null;
         }
 
         public override void Serialize(NetworkWriter writer)
         {
             writer.Write(cost);
-            if (spawned) writer.Write(spawned.gameObject);
-            else throw new NullReferenceException("invalid spawned");
+            if (spawned)
+            {
+                writer.Write(true);
+                writer.Write(spawned.gameObject);
+            }
+            else writer.Write(false);
         }
     }
 }
