@@ -29,7 +29,7 @@
       <HintPath>RiskOfOptions.dll</HintPath>
     </Reference>
     <Reference Include="ScriptsAssembly">
-      <HintPath>UnityResources\ScriptsAssembly.dll</HintPath>
+      <HintPath>UnityResources/ScriptsAssembly.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>

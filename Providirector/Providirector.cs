@@ -889,7 +889,7 @@ Body - {6} <{7}>",
             int num = characterBody ? instanceList.IndexOf(characterBody) : 0;
             for (int i = num + 1; i < instanceList.Count; i++)
             {
-                if ((instanceList[i].teamComponent && IsTargetable(instanceList[i].teamComponent)) || debugEnabled)
+                if (IsTargetable(instanceList[i]) || debugEnabled)
                 {
                     spectateTarget = instanceList[i].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
@@ -898,7 +898,7 @@ Body - {6} <{7}>",
             }
             for (int j = 0; j <= num; j++)
             {
-                if ((instanceList[j].teamComponent && IsTargetable(instanceList[j].teamComponent)) || debugEnabled)
+                if (IsTargetable(instanceList[j]) || debugEnabled)
                 {
                     spectateTarget = instanceList[j].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
@@ -1517,9 +1517,12 @@ Body - {6} <{7}>",
         #endregion
 
         #region General Util
-        public static bool IsTargetable(TeamComponent tc)
+        public static bool IsTargetable(CharacterBody body)
         {
-            return tc == null ? (tc.teamIndex == TeamIndex.Player) || (tc.teamIndex == TeamIndex.Void) : false;
+            if (!body) return false;
+            TeamComponent tc = body.teamComponent;
+            if (!tc) return false;
+            return tc.teamIndex == TeamIndex.Player || tc.teamIndex == TeamIndex.Void;
         }
         public static void PLog(LogLevel level, string message, params object[] fmt)
         {
