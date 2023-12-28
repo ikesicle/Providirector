@@ -20,7 +20,6 @@ using HarmonyLib;
 using RiskOfOptions;
 using RiskOfOptions.Options;
 using RiskOfOptions.OptionConfigs;
-using TMPro;
 using BepInEx.Logging;
 
 #pragma warning disable Publicizer001
@@ -30,10 +29,9 @@ namespace Providirector
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.SoftDependency)]
-    [BepInPlugin("com.DacityP.Providirector", "Providirector", "1.0.0")]
+    [BepInPlugin("com.DacityP.Providirector", "Providirector", "1.0.2")]
     public class Providirector : BaseUnityPlugin
     {
-        // TODO: Implement measure to spawn a wisp with the doppelganger effect that contains all reserve credits
         #region Variables
         private static ConfigEntry<bool> _modEnabled;
         private static readonly bool _modEnabledfallback = true;
@@ -119,7 +117,6 @@ namespace Providirector
         private ProvidirectorHUD hud;
         private GameObject activeClientDirectorObject;
         private HealthBar targetHealthbar;
-        private TextMeshProUGUI spectateLabel;
         private GameObject spectateTarget;
         private GameObject spectateTargetMaster => spectateTarget.GetComponent<CharacterBody>().masterObject;
         private CharacterMaster clientDefaultMaster;
@@ -828,7 +825,6 @@ Body - {6} <{7}>",
                 {
                     hud.clientState = clientModeDirector;
                     targetHealthbar = hud.spectateHealthBar;
-                    spectateLabel = hud.spectateNameText;
                     targetHealthbar.style = ProvidirectorResources.GenerateHBS();
                 }
                 else
@@ -883,58 +879,28 @@ Body - {6} <{7}>",
             if (spectateinfo) spectateinfo.gameObject.SetActive(value);
         }
 
-        private void ChangeNextTarget()
+        private void ChangeTarget(bool direction = true)
         {
             if (!clientModeDirector) return;
-            ReadOnlyCollection<CharacterBody> readOnlyInstancesList = CharacterBody.readOnlyInstancesList;
-            if (readOnlyInstancesList.Count == 0) return;
+            List<CharacterBody> instanceList = new List<CharacterBody>(CharacterBody.readOnlyInstancesList);
+            if (instanceList.Count == 0) return;
             CharacterBody characterBody = spectateTarget ? spectateTarget.GetComponent<CharacterBody>() : null;
-            int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
-            for (int i = num + 1; i < readOnlyInstancesList.Count; i++)
+            if (direction) instanceList.Reverse();
+            int num = characterBody ? instanceList.IndexOf(characterBody) : 0;
+            for (int i = num + 1; i < instanceList.Count; i++)
             {
-                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[i].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
+                if ((instanceList[i].teamComponent && IsTargetable(instanceList[i].teamComponent)) || debugEnabled)
                 {
-                    spectateTarget = readOnlyInstancesList[i].gameObject;
+                    spectateTarget = instanceList[i].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
             }
             for (int j = 0; j <= num; j++)
             {
-                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[j].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
+                if ((instanceList[j].teamComponent && IsTargetable(instanceList[j].teamComponent)) || debugEnabled)
                 {
-                    spectateTarget = readOnlyInstancesList[j].gameObject;
-                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
-                    return;
-                }
-            }
-        }
-
-        private void ChangePreviousTarget()
-        {
-            if (!clientModeDirector) return;
-            ReadOnlyCollection<CharacterBody> readOnlyInstancesList = CharacterBody.readOnlyInstancesList;
-            if (readOnlyInstancesList.Count == 0)
-            {
-                spectateTarget = null;
-                return;
-            }
-            CharacterBody characterBody = spectateTarget ? spectateTarget.GetComponent<CharacterBody>() : null;
-            int num = (characterBody ? readOnlyInstancesList.IndexOf(characterBody) : 0);
-            for (int i = num - 1; i >= 0; i--)
-            {
-                if ((readOnlyInstancesList[i].teamComponent && readOnlyInstancesList[i].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[i].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[i].teamComponent.teamIndex != TeamIndex.None))
-                {
-                    spectateTarget = readOnlyInstancesList[i].gameObject;
-                    if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
-                    return;
-                }
-            }
-            for (int j = readOnlyInstancesList.Count - 1; j >= num; j--)
-            {
-                if ((readOnlyInstancesList[j].teamComponent && readOnlyInstancesList[j].teamComponent.teamIndex == TeamIndex.Player && readOnlyInstancesList[j].isPlayerControlled) || (debugEnabled && readOnlyInstancesList[j].teamComponent.teamIndex != TeamIndex.None))
-                {
-                    spectateTarget = readOnlyInstancesList[j].gameObject;
+                    spectateTarget = instanceList[j].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
                     return;
                 }
@@ -1111,7 +1077,7 @@ Body - {6} <{7}>",
 
             if (clientModeDirector == null) return;
 
-            if (spectateTarget == null) ChangeNextTarget();
+            if (spectateTarget == null) ChangeTarget();
 
             // Only Local Effects
 
@@ -1122,9 +1088,13 @@ Body - {6} <{7}>",
             else if (honorenabled) clientModeDirector.eliteTierIndex = EliteTierIndex.Honor1;
             else clientModeDirector.eliteTierIndex = EliteTierIndex.Normal;
 
-            if (InputManager.NextTarget.justPressed) ChangeNextTarget();
-            if (InputManager.PrevTarget.justPressed) ChangePreviousTarget();
-            if (InputManager.SwapPage.justPressed) clientModeDirector.secondPage = !clientModeDirector.secondPage;
+            if (InputManager.NextTarget.justPressed) ChangeTarget();
+            if (InputManager.PrevTarget.justPressed) ChangeTarget(false);
+            if (InputManager.SwapPage.justPressed)
+            {
+                PLog("Attempted to swap page to {0}", clientModeDirector.page + 1);
+                clientModeDirector.page++;
+            }
 
             // Server interference required
             if (InputManager.Slot1.justPressed) SendSpawnCommand(localToServerConnection, clientModeDirector.GetTrueIndex(0), clientModeDirector.eliteTierIndex, pos, rot);
@@ -1136,11 +1106,7 @@ Body - {6} <{7}>",
             if (InputManager.FocusTarget.justPressed)
             {
                 CharacterMaster target = spectateTargetMaster.GetComponent<CharacterMaster>();
-                if (clientModeDirector.ActivateFocus(target))
-                {
-                    if (clientModeDirector) clientModeDirector.focusTarget = target;
-                    SendFocusCommand(localToServerConnection, target);
-                }
+                if (clientModeDirector.ActivateFocus(target)) SendFocusCommand(localToServerConnection, target);
             }
             if (InputManager.BoostTarget.justPressed) SendBurstCommand(localToServerConnection);
 
@@ -1155,8 +1121,8 @@ Body - {6} <{7}>",
             if (victim == null) return;
             foreach (TeamComponent tc in TeamComponent.GetTeamMembers(TeamIndex.Monster))
             {
-                CharacterMaster c = tc.body.master;
-                if (victim == c) continue;
+                CharacterMaster c = tc.body?.master;
+                if (victim == c || c == null) continue;
                 foreach (BaseAI ai in c.aiComponents)
                 {
                     ai.currentEnemy.gameObject = focusTargetPersistent;
@@ -1363,7 +1329,7 @@ Body - {6} <{7}>",
                 NetworkWriter writer = new NetworkWriter();
                 writer.StartMessage(prvdChannel);
                 writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
-                bool result = serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, request.eliteClassIndex, out CharacterMaster spawned, out int cost);
+                bool result = serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, request.eliteClassIndex, request.enableSnap, out CharacterMaster spawned, out int cost);
                 // PLog("Server Spawn Result: {0}", result);
                 writer.Write(new SpawnConfirm()
                 {
@@ -1388,15 +1354,9 @@ Body - {6} <{7}>",
         public void HandleFocusServer(NetworkMessage msg, MessageSubIdentifier sid)
         {
             FocusEnemy focusEnemy = msg.reader.ReadMessage<FocusEnemy>();
-            if (focusEnemy.target)
-            {
-                focusTargetPersistent = focusEnemy.target.bodyInstanceObject;
-                RelockFocus();
-            }
-            else
-            {
-                // PLog("Received invalid focus target. Cancelling.");
-            }
+            if (focusEnemy.target && focusEnemy.target.bodyInstanceObject != focusTargetPersistent) focusTargetPersistent = focusEnemy.target.bodyInstanceObject;
+            else focusTargetPersistent = null;
+            RelockFocus();
         }
 
         private void VFStateUpdate(bool state, VoidFieldCardSync sync)
@@ -1453,7 +1413,8 @@ Body - {6} <{7}>",
                 slotIndex = slotIndex,
                 eliteClassIndex = eliteClassIndex,
                 position = position,
-                rotation = rotation
+                rotation = rotation,
+                enableSnap = nearestNodeSnap
             });
             writer.FinishMessage();
             connection?.SendWriter(writer, Channels.DefaultReliable);
@@ -1556,6 +1517,10 @@ Body - {6} <{7}>",
         #endregion
 
         #region General Util
+        public static bool IsTargetable(TeamComponent tc)
+        {
+            return tc == null ? (tc.teamIndex == TeamIndex.Player) || (tc.teamIndex == TeamIndex.Void) : false;
+        }
         public static void PLog(LogLevel level, string message, params object[] fmt)
         {
             if (instance) instance.Logger.Log(level, String.Format(message, fmt));
