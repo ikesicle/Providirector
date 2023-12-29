@@ -4,7 +4,7 @@ using RoR2;
 using ProvidirectorGame;
 namespace Providirector.NetworkCommands
 {
-	public class VoidFieldCardSync: MessageBase
+	public class CardSync: MessageBase
 	{
         public SpawnCardDisplayData[] cardDisplayDatas;
 

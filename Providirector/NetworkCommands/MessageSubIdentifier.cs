@@ -14,12 +14,13 @@ namespace Providirector.NetworkCommands
 		FPUpdate = 7,
 		DirectorSync = 8,
 		MovePosition = 9,
-		VoidFieldDirectorSync = 10,
+		CardSync = 10,
 		NotifyNewMaster = 11,
 		RequestBodyResync = 12,
 		VoidRaidOnDeath = 13,
 		FogSafeZone = 14,
-		CachedCredits = 15
+		CachedCredits = 15,
+		RateUpdate = 16
 	}
 	public class MessageSubIdentifier: MessageBase
 	{

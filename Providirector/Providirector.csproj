@@ -51,9 +51,6 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="NetworkCommands\" />
-  </ItemGroup>
-  <ItemGroup>
     <Content Include="icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

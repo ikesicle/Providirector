@@ -2,7 +2,7 @@
 using ProvidirectorGame;
 namespace Providirector.NetworkCommands
 {
-	public class SyncDirector: MessageBase
+	public class DirectorSync: MessageBase
 	{
         public bool serverData;
         public bool snapToNearestNode;
@@ -12,9 +12,9 @@ namespace Providirector.NetworkCommands
         public int walletGain;
         public int spawnCap;
 
-        public SyncDirector() { }
+        public DirectorSync() { }
 
-        public SyncDirector(bool serverData)
+        public DirectorSync(bool serverData)
         {
             this.serverData = serverData;
             snapToNearestNode = DirectorState.snapToNearestNode;

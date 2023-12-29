@@ -21,6 +21,7 @@ using RiskOfOptions;
 using RiskOfOptions.Options;
 using RiskOfOptions.OptionConfigs;
 using BepInEx.Logging;
+using Newtonsoft.Json.Utilities;
 
 #pragma warning disable Publicizer001
 
@@ -62,8 +63,8 @@ namespace Providirector
 
         // General
         public static bool runIsActive = false;
-        private SyncDirector _currentDirectorConfig;
-        public SyncDirector currentDirectorConfig
+        private DirectorSync _currentDirectorConfig;
+        public DirectorSync currentDirectorConfig
         {
             get { return _currentDirectorConfig; }
             set
@@ -123,7 +124,7 @@ namespace Providirector
         private float newCharacterMasterSpawnGrace = 0f;
 
         // Advanced Camera Controls for Voidling, copied from FirstPersonRedux
-        private static readonly Vector3 frontalCamera = new Vector3(0f, 0f, 0f);
+        private static readonly Vector3 frontalCamera = new(0f, 0f, 0f);
         private CameraTargetParams.CameraParamsOverrideHandle fpHandle;
         private CharacterCameraParamsData cpData;
 
@@ -145,10 +146,10 @@ namespace Providirector
 
         // Other locally defined constants
         private const short prvdChannel = 12345;
-        private readonly Vector3 rescueShipTriggerZone = new Vector3(303f, -120f, 393f);
-        private readonly Vector3 moonFightTriggerZone = new Vector3(-47.0f, 524.0f, -23.0f);
-        private readonly Vector3 voidlingTriggerZone = new Vector3(-81.0f, 50.0f, 82.0f);
-        private readonly Vector3 defaultZone = new Vector3(0, -99999f, 0); // Lmfao
+        private readonly Vector3 rescueShipTriggerZone = new(303f, -120f, 393f);
+        private readonly Vector3 moonFightTriggerZone = new(-47.0f, 524.0f, -23.0f);
+        private readonly Vector3 voidlingTriggerZone = new(-81.0f, 50.0f, 82.0f);
+        private readonly Vector3 defaultZone = new(0, -99999f, 0);
         private const float gracePeriodLength = 5f;
 
         private NetworkConnection serverDirectorConnection => directorUser.connectionToClient;
@@ -301,12 +302,12 @@ namespace Providirector
                 PLog("Current combat encounter is forced to be client-controlled, adding client control to body {0}", component);
                 clientAuthorityOwner = firstControllerAlreadySet ? NetworkServer.connections[0] : directorUser.connectionToClient;
             }
+            //PLog("{0} has an LPA: {1}", gameObject, prefabHasLPA);
             if (clientAuthorityOwner != null && prefabHasLPA)
             {
                 // PLog("Spawning {0} with client authority", component);
                 clientAuthorityOwner.isReady = true;
                 NetworkServer.SpawnWithClientAuthority(gameObject, clientAuthorityOwner);
-                self.inventory.GiveItem(RoR2Content.Items.TeleportWhenOob);
             }
             else
             {
@@ -346,7 +347,7 @@ namespace Providirector
                     {
                         gameobject = directorUser.gameObject
                     });
-                    if (nu == directorUser) SendNetMessageSingle(nu.connectionToClient, MessageType.DirectorSync, 1, new SyncDirector(true));
+                    if (nu == directorUser) SendNetMessageSingle(nu.connectionToClient, MessageType.DirectorSync, 1, new DirectorSync(true));
                 }
                 PLog("Providirector has been set up for this run!");
             }
@@ -354,7 +355,7 @@ namespace Providirector
 
         private void PreventDeathCallsIfDirector(On.RoR2.GlobalEventManager.orig_OnPlayerCharacterDeath orig, GlobalEventManager self, DamageReport damageReport, NetworkUser victimNetworkUser)
         {
-            if (!runIsActive || victimNetworkUser == directorUser) return;
+            if (!runIsActive || !modEnabled || victimNetworkUser == directorUser) return;
             orig(self, damageReport, victimNetworkUser); // Stop death messages and other hooked things like Refightilization
         }
 
@@ -412,7 +413,8 @@ namespace Providirector
 
         private void PostSceneChangeServer()
         {
-            PLog("Added {0} monstercards server-side.", serverModeDirector.UpdateMonsterSelection());
+            PLog("Added {0} monstercards server-side.", ServerState.UpdateMonsterSelection());
+            SendNetMessageSingle(serverDirectorConnection, MessageType.CardSync, 1, new CardSync { cardDisplayDatas = SerializeDisplays(ServerState.spawnCardTemplates) });
         }
 
         private void CombatDirector_Awake(On.RoR2.CombatDirector.orig_Awake orig, CombatDirector self)
@@ -605,19 +607,23 @@ namespace Providirector
                 toset += string.Format("Mode {0}\n", self.cameraMode);
                 if (self.cameraModeContext.targetInfo.master) toset += string.Format("Target Master: {0} <{1}>\nLinked NU: {2}\n",
                     self.cameraModeContext.targetInfo.master,
-                    self.cameraModeContext.targetInfo.master.hasEffectiveAuthority,
+                    self.cameraModeContext.targetInfo.master.hasAuthority,
                     self.cameraModeContext.targetInfo.networkUser?.GetNetworkPlayerName().GetResolvedName());
                 if (self.cameraModeContext.targetInfo.networkedViewAngles)
                     toset += string.Format("P {0} Y {1} <{2}>\n",
-                        self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.pitch, self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.yaw, self.cameraModeContext.targetInfo.networkedViewAngles.hasEffectiveAuthority);
+                        self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.pitch, self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.yaw, self.cameraModeContext.targetInfo.networkedViewAngles.hasAuthority);
                 if (self.cameraModeContext.targetInfo.body)
                 {
                     toset += string.Format(@"Target Body Data ---
 State - {0}
 Pos - {1}
+Rotation - {2}
+CharDirectionYaw - {3}
 ",
                         self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state != null ? self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state : "Unknown",
-                        self.cameraModeContext.targetInfo.body.transform.position
+                        self.cameraModeContext.targetInfo.body.transform.position,
+                        self.cameraModeContext.targetInfo.body.transform.rotation,
+                        self.cameraModeContext.targetInfo.body.GetComponent<CharacterDirection>()?.yaw
                 );
                 }
                 if (newCharacterMasterSpawnGrace > 0) toset += string.Format("[[ GRACE {0}s ]]\n", newCharacterMasterSpawnGrace);
@@ -629,12 +635,12 @@ Master -  {4} <{5}>
 Body - {6} <{7}>",
                         self.cameraModeContext.viewerInfo.localUser?.cachedMasterObject,
                         self.cameraModeContext.viewerInfo.localUser?.cachedMasterController,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.hasEffectiveAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.hasAuthority,
                         self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.master,
                         self.cameraModeContext.viewerInfo.localUser?.cachedMaster,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster?.hasEffectiveAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster?.hasAuthority,
                         self.cameraModeContext.viewerInfo.localUser?.cachedBody,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedBody?.hasEffectiveAuthority);
+                        self.cameraModeContext.viewerInfo.localUser?.cachedBody?.hasAuthority);
                 toset += "\nAdditional Debug Data ---\n";
                 if (PhaseCounter.instance != null) toset += string.Format(@"Phase {0}", PhaseCounter.instance.phase);
                 else toset += "Phase N/A";
@@ -785,11 +791,10 @@ Body - {6} <{7}>",
                 {
                     activeClientDirectorObject = Instantiate(ProvidirectorResources.clientDirectorPrefab);
                     clientModeDirector = activeClientDirectorObject.GetComponent<ClientState>();
-                    PLog("Added {0} monster cards to the client director.", ClientState.UpdateMonsterSelection());
                     clientModeDirector.OnCachedLimitReached += ClientModeDirector_OnCachedLimitReached;
                 }
 
-                SendNetMessageSingle(directorUser.connectionToServer, MessageType.DirectorSync, 1, new SyncDirector(false));
+                SendNetMessageSingle(directorUser.connectionToServer, MessageType.DirectorSync, 1, new DirectorSync(false));
                 if (activeHud == null) activeHud = Instantiate(ProvidirectorResources.hudPrefab);
             }
             PLog("Attempting HUD afterinit");
@@ -882,14 +887,14 @@ Body - {6} <{7}>",
         private void ChangeTarget(bool direction = true)
         {
             if (!clientModeDirector) return;
-            List<CharacterBody> instanceList = new List<CharacterBody>(CharacterBody.readOnlyInstancesList);
+            List<CharacterBody> instanceList = new(CharacterBody.readOnlyInstancesList);
             if (instanceList.Count == 0) return;
             CharacterBody characterBody = spectateTarget ? spectateTarget.GetComponent<CharacterBody>() : null;
             if (direction) instanceList.Reverse();
             int num = characterBody ? instanceList.IndexOf(characterBody) : 0;
             for (int i = num + 1; i < instanceList.Count; i++)
             {
-                if (IsTargetable(instanceList[i]) || debugEnabled)
+                if (IsTargetable(instanceList[i]))
                 {
                     spectateTarget = instanceList[i].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
@@ -898,7 +903,7 @@ Body - {6} <{7}>",
             }
             for (int j = 0; j <= num; j++)
             {
-                if (IsTargetable(instanceList[j]) || debugEnabled)
+                if (IsTargetable(instanceList[j]))
                 {
                     spectateTarget = instanceList[j].gameObject;
                     if (clientModeDirector) clientModeDirector.spectateTarget = spectateTarget;
@@ -980,15 +985,10 @@ Body - {6} <{7}>",
         {
             if (!runIsActive) return;
             string sceneName = obj.sceneDef.baseSceneName;
-            if (sceneName.Equals("arena"))
+            if ((sceneName.Equals("arena") || sceneName.Equals("voidraid")) && clientModeDirector)
             {
-                Debug.Log("Void Field setup called");
-                if (clientModeDirector)
-                {
-                    clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
-                    ClientState.spawnableCharacters.Clear();
-                }
-                
+                clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
+                ClientState.spawnableCharacters.Clear();
             }
         }
 
@@ -1181,16 +1181,16 @@ Body - {6} <{7}>",
                     break;
                 case MessageType.DirectorSync:
                     // PLog("Syncing director config for client");
-                    currentDirectorConfig = msg.reader.ReadMessage<SyncDirector>();
+                    currentDirectorConfig = msg.reader.ReadMessage<DirectorSync>();
                     break;
                 case MessageType.MovePosition:
                     var data = msg.reader.ReadMessage<MovePosition>();
                     if (directorIsLocal) StartCoroutine(MoveCollisionAttempt(data.position, data.intendedSceneName));
                     break;
-                case MessageType.VoidFieldDirectorSync:
+                case MessageType.CardSync:
                     // PLog("Syncing Void Fields");
-                    VoidFieldCardSync sync = msg.reader.ReadMessage<VoidFieldCardSync>();
-                    VFStateUpdate(header.booleanValue, sync);
+                    CardSync sync = msg.reader.ReadMessage<CardSync>();
+                    UpdateCards(sync);
                     break;
                 case MessageType.NotifyNewMaster:
                     CharacterMaster newm = msg.reader.ReadMessage<NotifyNewMaster>().target;
@@ -1219,7 +1219,7 @@ Body - {6} <{7}>",
                     break;
                 case MessageType.DirectorSync:
                     // PLog("Syncing director config for server");
-                    currentDirectorConfig = msg.reader.ReadMessage<SyncDirector>();
+                    currentDirectorConfig = msg.reader.ReadMessage<DirectorSync>();
                     break;
                 case MessageType.Burst:
                     HandleBurstServer(msg, header);
@@ -1262,7 +1262,7 @@ Body - {6} <{7}>",
             }
         }
 
-        public void HandleGameStartClient(NetworkMessage msg, MessageSubIdentifier header)
+        public void HandleGameStartClient(NetworkMessage msg, MessageSubIdentifier _)
         {
             GameStart gs = msg.ReadMessage<GameStart>();
             runIsActive = true;
@@ -1315,21 +1315,21 @@ Body - {6} <{7}>",
             }
         }
 
-        public void HandleSpawnClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
+        public void HandleSpawnClient(NetworkMessage msg, MessageSubIdentifier _) // Receives boolean response
         {
             var k = msg.reader.ReadMessage<SpawnConfirm>();
             clientModeDirector.DoPurchaseTrigger(k.cost, k.spawned);
         }
 
-        public void HandleSpawnServer(NetworkMessage msg, MessageSubIdentifier sid)
+        public void HandleSpawnServer(NetworkMessage msg, MessageSubIdentifier _)
         {
             SpawnEnemy request = msg.reader.ReadMessage<SpawnEnemy>();
             if (request != null)
             {
-                NetworkWriter writer = new NetworkWriter();
+                NetworkWriter writer = new();
                 writer.StartMessage(prvdChannel);
                 writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
-                bool result = serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, request.eliteClassIndex, request.enableSnap, out CharacterMaster spawned, out int cost);
+                serverModeDirector.TrySpawn(request.slotIndex, request.position, request.rotation, request.eliteClassIndex, request.enableSnap, out CharacterMaster spawned, out int cost);
                 // PLog("Server Spawn Result: {0}", result);
                 writer.Write(new SpawnConfirm()
                 {
@@ -1341,17 +1341,17 @@ Body - {6} <{7}>",
             }
         }
 
-        public void HandleBurstClient(NetworkMessage msg, MessageSubIdentifier sid) // Receives boolean response
+        public void HandleBurstClient(NetworkMessage _, MessageSubIdentifier sid) // Receives boolean response
         {
             clientModeDirector.DoBurstTrigger(sid.booleanValue);
         }
 
-        public void HandleBurstServer(NetworkMessage msg, MessageSubIdentifier sid)
+        public void HandleBurstServer(NetworkMessage msg, MessageSubIdentifier _)
         {
             SendSingleGeneric(msg.conn, MessageType.Burst, serverModeDirector.ActivateBurst());
         }
 
-        public void HandleFocusServer(NetworkMessage msg, MessageSubIdentifier sid)
+        public void HandleFocusServer(NetworkMessage msg, MessageSubIdentifier _)
         {
             FocusEnemy focusEnemy = msg.reader.ReadMessage<FocusEnemy>();
             if (focusEnemy.target && focusEnemy.target.bodyInstanceObject != focusTargetPersistent) focusTargetPersistent = focusEnemy.target.bodyInstanceObject;
@@ -1359,24 +1359,18 @@ Body - {6} <{7}>",
             RelockFocus();
         }
 
-        private void VFStateUpdate(bool state, VoidFieldCardSync sync)
+        private void UpdateCards(CardSync sync)
         {
             if (!(runIsActive && clientModeDirector)) return;
             ClientState.spawnableCharacters.Clear();
-            if (state)
-            {
-                clientModeDirector.rateModifier = ClientState.RateModifier.TeleporterBoosted;
-                PLog("{0} Cards to sync", sync.cardDisplayDatas);
-                foreach (SpawnCardDisplayData card in sync.cardDisplayDatas) ClientState.spawnableCharacters.Add(card);
-            }
-            else clientModeDirector.rateModifier = ClientState.RateModifier.Locked;
+            foreach (SpawnCardDisplayData card in sync.cardDisplayDatas) ClientState.spawnableCharacters.Add(card);
         }
         #endregion
 
         #region Network Send
         public static void SendSingleGeneric(NetworkConnection connection, MessageType subtype, uint value)
         {
-            NetworkWriter writer = new NetworkWriter();
+            NetworkWriter writer = new();
             writer.StartMessage(prvdChannel);
             writer.Write(new MessageSubIdentifier { returnValue = value, type = subtype});
             writer.FinishMessage();
@@ -1390,7 +1384,7 @@ Body - {6} <{7}>",
 
         public void SendNetMessageSingle(NetworkConnection connection, MessageType type, uint value, MessageBase message)
         {
-            NetworkWriter writer = new NetworkWriter();
+            NetworkWriter writer = new();
             writer.StartMessage(prvdChannel);
             writer.Write(new MessageSubIdentifier()
             {
@@ -1405,7 +1399,7 @@ Body - {6} <{7}>",
         public bool SendSpawnCommand(NetworkConnection connection, int slotIndex, EliteTierIndex eliteClassIndex, Vector3 position, Quaternion rotation)
         {
             if (!clientModeDirector.IsAbleToSpawn(slotIndex, position, rotation, out int _, eliteIndexOverride: eliteClassIndex)) return false;
-            NetworkWriter writer = new NetworkWriter();
+            NetworkWriter writer = new();
             writer.StartMessage(prvdChannel);
             writer.Write(new MessageSubIdentifier { type = MessageType.SpawnEnemy });
             writer.Write(new SpawnEnemy()
@@ -1435,7 +1429,7 @@ Body - {6} <{7}>",
         {
             // PLog("Send Focus Command! {0}", target);
             if (target == null) return;
-            NetworkWriter writer = new NetworkWriter();
+            NetworkWriter writer = new();
             writer.StartMessage(prvdChannel);
             writer.Write(new MessageSubIdentifier { type = MessageType.FocusEnemy });
             writer.Write(new FocusEnemy()
@@ -1482,8 +1476,7 @@ Body - {6} <{7}>",
                         return;
                     }
                     string targetUser = subargs[1];
-                    int index;
-                    if (!int.TryParse(targetUser, out index))
+                    if (!int.TryParse(targetUser, out int index))
                     {
                         index = 0;
                         foreach (NetworkUser nu in NetworkUser.instancesList)
@@ -1522,7 +1515,7 @@ Body - {6} <{7}>",
             if (!body) return false;
             TeamComponent tc = body.teamComponent;
             if (!tc) return false;
-            return tc.teamIndex == TeamIndex.Player || tc.teamIndex == TeamIndex.Void;
+            return tc.teamIndex == TeamIndex.Player || tc.teamIndex == TeamIndex.Void || (debugEnabled && tc.teamIndex == TeamIndex.Monster);
         }
         public static void PLog(LogLevel level, string message, params object[] fmt)
         {
@@ -1564,31 +1557,31 @@ Body - {6} <{7}>",
             orig(self);
         }
 
+        private SpawnCardDisplayData[] SerializeDisplays(IEnumerable<SpawnCard> sclist)
+        {
+            var ret = new SpawnCardDisplayData[sclist.Count()];
+            int i = 0;
+            foreach (SpawnCard c in sclist)
+            {
+                ret[i] = ClientState.ExtractDisplayData(c);
+                i++;
+            }
+            return ret;
+        }
         private void FieldCardUpdate(On.RoR2.ArenaMissionController.orig_BeginRound orig, ArenaMissionController self)
         {
             orig(self);
             if (runIsActive && directorUser && serverModeDirector)
             {
                 ServerState.spawnCardTemplates.Clear();
-                var toSend = new SpawnCardDisplayData[ArenaMissionController.instance.activeMonsterCards.Count];
-                int i = 0;
-                foreach (DirectorCard c in ArenaMissionController.instance.activeMonsterCards) {
-                    ServerState.spawnCardTemplates.Add(c.spawnCard);
-                    toSend[i] = ClientState.ExtractDisplayData(c.spawnCard);
-                    i++;
-                }
-                // PLog("AMC contained {0} active monster cards.", ArenaMissionController.instance.activeMonsterCards.Count);
+                ServerState.spawnCardTemplates.AddRange(ArenaMissionController.instance.activeMonsterCards.Select(x => x.spawnCard));
                 DirectorState.monsterInv = ArenaMissionController.instance.inventory;
-                SendNetMessageSingle(directorUser.connectionToClient, MessageType.VoidFieldDirectorSync , 1, new VoidFieldCardSync()
+                SendNetMessageSingle(serverDirectorConnection, MessageType.CardSync, 1, new CardSync
                 {
-                    cardDisplayDatas = toSend
+                    cardDisplayDatas = SerializeDisplays(ServerState.spawnCardTemplates),
                 });
-                // PLog("Sent VF director sync");
-            } else
-            {
-                PLog("No director User found! Canceling send");
+                SendSingleGeneric(serverDirectorConnection, MessageType.RateUpdate, (int)ClientState.RateModifier.TeleporterBoosted);
             }
-            
         }
 
         private void RoundEndLock(On.RoR2.ArenaMissionController.orig_EndRound orig, ArenaMissionController self)
@@ -1599,15 +1592,11 @@ Body - {6} <{7}>",
                 ServerState.spawnCardTemplates.Clear();
                 // PLog("Template List Cleared.");
                 DirectorState.monsterInv = ArenaMissionController.instance.inventory;
-                SendNetMessageSingle(directorUser.connectionToClient, MessageType.VoidFieldDirectorSync, 0, new VoidFieldCardSync()
+                SendNetMessageSingle(directorUser.connectionToClient, MessageType.CardSync, 0, new CardSync()
                 {
                     cardDisplayDatas = new SpawnCardDisplayData[0]
                 });
-                PLog("Sent VF director sync");
-            }
-            else
-            {
-                PLog("No director User found! Canceling send");
+                SendSingleGeneric(serverDirectorConnection, MessageType.RateUpdate, (int)ClientState.RateModifier.Locked);
             }
         }
 
@@ -1653,7 +1642,7 @@ Body - {6} <{7}>",
             bool forceScriptEncounterAddControlCached = forceScriptEncounterAddControl;
             bool firstPersonEnabledCached = enableFirstPerson;
             forceScriptEncounterAddControl = false;
-            firstPersonEnabledCached = false;
+            enableFirstPerson = false;
             orig(srcCharacterMaster, rng);
             forceScriptEncounterAddControl = forceScriptEncounterAddControlCached;
             enableFirstPerson = firstPersonEnabledCached;
