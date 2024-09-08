@@ -23,7 +23,7 @@ using RiskOfOptions.OptionConfigs;
 using BepInEx.Logging;
 using Newtonsoft.Json.Utilities;
 
-#pragma warning disable Publicizer001
+#pragma warning disable IDE1006
 
 namespace Providirector
 {
@@ -225,9 +225,59 @@ namespace Providirector
                 if (skipClientVerification) PLog("Skipped verification for local join");
                 else orig(a, b);
             };
-            On.RoR2.CameraRigController.Update += CameraRigController_Update;
+            On.RoR2.CameraRigController.EarlyUpdate += CameraRigController_EarlyUpdate;
 #endif
             if (harmonyInstance != null) harmonyInstance.PatchAll(typeof(HarmonyPatches));
+        }
+
+        private void CameraRigController_EarlyUpdate(On.RoR2.CameraRigController.orig_EarlyUpdate orig, CameraRigController self)
+        {
+            orig(self);
+            if (panel && panel.isActiveAndEnabled && self.cameraModeContext.viewerInfo.localUser == localUser)
+            {
+                string toset = string.Format("CameraRigController (Viewer {0}) ==============\n", self.cameraModeContext.viewerInfo.localUser?.currentNetworkUser?.GetNetworkPlayerName().GetResolvedName());
+                toset += string.Format("Mode {0}\n", self.cameraMode);
+                if (self.cameraModeContext.targetInfo.master) toset += string.Format("Target Master: {0} <{1}>\nLinked NU: {2}\n",
+                    self.cameraModeContext.targetInfo.master,
+                    self.cameraModeContext.targetInfo.master.hasAuthority,
+                    self.cameraModeContext.targetInfo.networkUser?.GetNetworkPlayerName().GetResolvedName());
+                if (self.cameraModeContext.targetInfo.networkedViewAngles)
+                    toset += string.Format("P {0} Y {1} <{2}>\n",
+                        self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.pitch, self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.yaw, self.cameraModeContext.targetInfo.networkedViewAngles.hasAuthority);
+                if (self.cameraModeContext.targetInfo.body)
+                {
+                    toset += string.Format(@"Target Body Data ---
+State - {0}
+Pos - {1}
+Rotation - {2}
+CharDirectionYaw - {3}
+",
+                        self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state != null ? self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state : "Unknown",
+                        self.cameraModeContext.targetInfo.body.transform.position,
+                        self.cameraModeContext.targetInfo.body.transform.rotation,
+                        self.cameraModeContext.targetInfo.body.GetComponent<CharacterDirection>()?.yaw
+                );
+                }
+                if (newCharacterMasterSpawnGrace > 0) toset += string.Format("[[ GRACE {0}s ]]\n", newCharacterMasterSpawnGrace);
+                if (self.cameraModeContext.viewerInfo.localUser != null)
+                    toset += string.Format(@"Viewer Local User Data ---
+MasterObj - {0}
+PCMC - {1} <{2}> linked to {3}
+Master -  {4} <{5}>
+Body - {6} <{7}>",
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterObject,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.hasAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.master,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster?.hasAuthority,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedBody,
+                        self.cameraModeContext.viewerInfo.localUser?.cachedBody?.hasAuthority);
+                toset += "\nAdditional Debug Data ---\n";
+                if (PhaseCounter.instance != null) toset += string.Format(@"Phase {0}", PhaseCounter.instance.phase);
+                else toset += "Phase N/A";
+                panel.SetDebugInfo(toset);
+            }
         }
 
         private void SetupRiskOfOptions()
@@ -597,152 +647,15 @@ namespace Providirector
             self.cachedBody = self.cachedMaster?.GetBody();
             self.cachedBodyObject = self.cachedBody?.gameObject;
         }
-
-        private void CameraRigController_Update(On.RoR2.CameraRigController.orig_Update orig, CameraRigController self)
-        {
-            orig(self);
-            if (panel && panel.isActiveAndEnabled && self.cameraModeContext.viewerInfo.localUser == localUser)
-            {
-                string toset = string.Format("CameraRigController (Viewer {0}) ==============\n", self.cameraModeContext.viewerInfo.localUser?.currentNetworkUser?.GetNetworkPlayerName().GetResolvedName());
-                toset += string.Format("Mode {0}\n", self.cameraMode);
-                if (self.cameraModeContext.targetInfo.master) toset += string.Format("Target Master: {0} <{1}>\nLinked NU: {2}\n",
-                    self.cameraModeContext.targetInfo.master,
-                    self.cameraModeContext.targetInfo.master.hasAuthority,
-                    self.cameraModeContext.targetInfo.networkUser?.GetNetworkPlayerName().GetResolvedName());
-                if (self.cameraModeContext.targetInfo.networkedViewAngles)
-                    toset += string.Format("P {0} Y {1} <{2}>\n",
-                        self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.pitch, self.cameraModeContext.targetInfo.networkedViewAngles?.viewAngles.yaw, self.cameraModeContext.targetInfo.networkedViewAngles.hasAuthority);
-                if (self.cameraModeContext.targetInfo.body)
-                {
-                    toset += string.Format(@"Target Body Data ---
-State - {0}
-Pos - {1}
-Rotation - {2}
-CharDirectionYaw - {3}
-",
-                        self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state != null ? self.cameraModeContext.targetInfo.body.GetComponent<EntityStateMachine>()?.state : "Unknown",
-                        self.cameraModeContext.targetInfo.body.transform.position,
-                        self.cameraModeContext.targetInfo.body.transform.rotation,
-                        self.cameraModeContext.targetInfo.body.GetComponent<CharacterDirection>()?.yaw
-                );
-                }
-                if (newCharacterMasterSpawnGrace > 0) toset += string.Format("[[ GRACE {0}s ]]\n", newCharacterMasterSpawnGrace);
-                if (self.cameraModeContext.viewerInfo.localUser != null)
-                    toset += string.Format(@"Viewer Local User Data ---
-MasterObj - {0}
-PCMC - {1} <{2}> linked to {3}
-Master -  {4} <{5}>
-Body - {6} <{7}>",
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterObject,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.hasAuthority,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMasterController?.master,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedMaster?.hasAuthority,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedBody,
-                        self.cameraModeContext.viewerInfo.localUser?.cachedBody?.hasAuthority);
-                toset += "\nAdditional Debug Data ---\n";
-                if (PhaseCounter.instance != null) toset += string.Format(@"Phase {0}", PhaseCounter.instance.phase);
-                else toset += "Phase N/A";
-                panel.SetDebugInfo(toset);
-            }
-        }
-
+        
         private void RunCameraManager_Update(On.RoR2.RunCameraManager.orig_Update orig, RunCameraManager self)
         {
-            if (!(runIsActive && directorIsLocal))
-            {
-                orig(self);
-                return;
-            }
-            // Copied code with a single exception implemented for the new player
-            bool flag = Stage.instance;
-            CameraRigController[] cameras = self.cameras;
-            if (flag)
-            {
-                int i = 0;
-                for (int count = CameraRigController.readOnlyInstancesList.Count; i < count; i++)
-                {
-                    if (CameraRigController.readOnlyInstancesList[i].suppressPlayerCameras)
-                    {
-                        return;
-                    }
-                }
-            }
-            if (flag)
-            {
-                int num = 0;
-                ReadOnlyCollection<NetworkUser> readOnlyLocalPlayersList = NetworkUser.readOnlyLocalPlayersList;
-                for (int j = 0; j < readOnlyLocalPlayersList.Count; j++)
-                {
-                    NetworkUser networkUser = readOnlyLocalPlayersList[j];
-                    CameraRigController cameraRigController = cameras[num];
-                    if (!cameraRigController)
-                    {
-                        cameraRigController = Instantiate(LegacyResourcesAPI.Load<GameObject>("Prefabs/Main Camera")).GetComponent<CameraRigController>();
-                        cameras[num] = cameraRigController;
-                    }
-                    cameraRigController.viewer = networkUser;
-                    networkUser.cameraRigController = cameraRigController;
-                    GameObject networkUserBodyObject = RunCameraManager.GetNetworkUserBodyObject(networkUser);
-                    ForceSpectate forceSpectate = InstanceTracker.FirstOrNull<ForceSpectate>();
-
-                    if ((bool)forceSpectate)
-                    {
-                        cameraRigController.nextTarget = forceSpectate.target;
-                        cameraRigController.cameraMode = CameraModePlayerBasic.spectator;
-                    }
-                    else if (networkUserBodyObject && networkUser.master != clientDefaultMaster)
-                    {
-                        cameraRigController.nextTarget = networkUserBodyObject;
-                        cameraRigController.cameraMode = CameraModePlayerBasic.playerBasic;
-                    }
-                    else if (networkUserBodyObject && networkUser.master == clientDefaultMaster)
-                    {
-                        cameraRigController.nextTarget = spectateTarget;
-                        cameraRigController.cameraMode = CameraModeDirector.director;
-                    }
-                    else if (!cameraRigController.disableSpectating)
-                    {
-                        cameraRigController.cameraMode = CameraModePlayerBasic.spectator;
-                        if (!cameraRigController.target)
-                        {
-                            cameraRigController.nextTarget = CameraRigControllerSpectateControls.GetNextSpectateGameObject(networkUser, null);
-                        }
-                    }
-                    else
-                    {
-                        cameraRigController.cameraMode = CameraModeNone.instance;
-                    }
-                    num++;
-                }
-                int num2 = num;
-                for (int k = num; k < cameras.Length; k++)
-                {
-                    ref CameraRigController reference = ref cameras[num];
-                    if (reference != null)
-                    {
-                        if ((bool)reference)
-                        {
-                            Destroy(cameras[num].gameObject);
-                        }
-                        reference = null;
-                    }
-                }
-                Rect[] array = RunCameraManager.screenLayouts[num2];
-                for (int l = 0; l < num2; l++)
-                {
-                    cameras[l].viewport = array[l];
-                }
-                return;
-            }
-            for (int m = 0; m < cameras.Length; m++)
-            {
-                if ((bool)cameras[m])
-                {
-                    Destroy(cameras[m].gameObject);
-                }
-            }
+            orig(self);
+            if (!(runIsActive && directorIsLocal && !self.isLobby)) return;
+            CameraRigController localRig = localUser.cameraRigController;
+            if (!localRig) return;
+            localRig.nextTarget = spectateTarget;
+            localRig.cameraMode = CameraModeDirector.director;
         }
 
         private void SetupSceneChange(On.RoR2.Networking.NetworkManagerSystem.orig_OnClientSceneChanged orig, NetworkManagerSystem self, NetworkConnection conn)

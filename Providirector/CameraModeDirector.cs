@@ -16,7 +16,7 @@ public class CameraModeDirector : CameraModePlayerBasic
         set { idealLocalCameraPosOverride = new Vector3(0f, 0f, value); }
     }
 
-    public static CameraModeDirector director = new CameraModeDirector { isSpectatorMode = false };
+    public static CameraModeDirector director = new() { isSpectatorMode = false };
 
     public override void UpdateInternal(object rawInstanceData, in CameraModeContext context, out UpdateResult result)
     {
@@ -40,7 +40,7 @@ public class CameraModeDirector : CameraModePlayerBasic
         Vector2 vector = Vector2.zero;
         if ((bool)targetParams)
         {
-            CharacterCameraParamsData.Blend(in targetParams.currentCameraParamsData, ref dest, 0.5f);
+            CharacterCameraParamsData.Blend(in targetParams.currentCameraParamsData, ref dest, 1f);
             fov = dest.fov.value;
             vector = targetParams.recoil;
         }
@@ -60,16 +60,11 @@ public class CameraModeDirector : CameraModePlayerBasic
         if ((bool)context.targetInfo.target)
         {
             quaternion = Quaternion.Euler(pitch, yaw, 0f);
-            //Debug.LogFormat("idealLocalCameraPos: {0}", dest.idealLocalCameraPos.value);
             Vector3 direction = targetPivotPosition + quaternion * dest.idealLocalCameraPos.value - targetPivotPosition;
             float magnitude = direction.magnitude;
             // We removed the parabolic camera controls - The camera now moves uniformly around the player character.
 
-            Ray ray = new Ray(targetPivotPosition, direction);
             float num3 = cameraRigController.Raycast(new Ray(targetPivotPosition, direction), magnitude, dest.wallCushion.value - 0.01f);
-            //Debug.DrawRay(ray.origin, ray.direction * magnitude, Color.yellow, Time.deltaTime);
-            //Debug.DrawRay(ray.origin, ray.direction * num3, Color.red, Time.deltaTime);
-            //Debug.LogFormat("Raycast Result: {0} / {1} -- CCD: {2}, OVR: {3}", num3, cameraDistance, instanceData.currentCameraDistance, idealLocalCameraPosOverride.value);
             if (instanceData.currentCameraDistance >= num3)
             {
                 instanceData.currentCameraDistance = num3;
@@ -81,6 +76,7 @@ public class CameraModeDirector : CameraModePlayerBasic
             }
             position = targetPivotPosition + direction.normalized * instanceData.currentCameraDistance;
         }
+        result = new UpdateResult();
         result.cameraState.position = position;
         result.cameraState.rotation = quaternion;
         result.cameraState.fov = fov;
@@ -92,12 +88,8 @@ public class CameraModeDirector : CameraModePlayerBasic
     public override void CollectLookInputInternal(object rawInstanceData, in CameraModeContext context, out CollectLookInputResult output)
     {
         ref readonly ViewerInfo viewerInfo = ref context.viewerInfo;
-        Player inputPlayer = viewerInfo.inputPlayer;
         float scrollwheel = Input.mouseScrollDelta.y;
         cameraDistance = Mathf.Clamp(cameraDistance + scrollwheel, -100f, -2f);
-        
-        
-        // Rudimentary implement but it'll work for now
         base.CollectLookInputInternal(rawInstanceData, context, out output);
     }
 
