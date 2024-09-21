@@ -1,12 +1,14 @@
 ﻿using HarmonyLib;
+using UnityEngine;
 using RoR2;
-using UnityEngine.Networking;
+using MonoMod.Cil;
+using Mono.Cecil.Cil;
 
 namespace Providirector
 {
     [HarmonyPatch(MethodType.Getter)]
-    public static class HarmonyPatches
-	{
+    public static class HarmonyGetters
+    {
         [HarmonyPostfix, HarmonyPatch(typeof(Run), nameof(Run.participatingPlayerCount))]
         public static void ParticipatingPlayerCountOverride(ref int __result)
         {

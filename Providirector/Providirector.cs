@@ -1,8 +1,6 @@
 ﻿using BepInEx;
-using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using RoR2;
-using RoR2.CameraModes;
 using RoR2.CharacterAI;
 using RoR2.UI;
 using RoR2.Networking;
@@ -11,8 +9,8 @@ using UnityEngine;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Linq;
+using BepInEx.Bootstrap;
 using UnityEngine.Networking;
 using ProvidirectorGame;
 using Providirector.NetworkCommands;
@@ -21,7 +19,6 @@ using RiskOfOptions;
 using RiskOfOptions.Options;
 using RiskOfOptions.OptionConfigs;
 using BepInEx.Logging;
-using Newtonsoft.Json.Utilities;
 
 #pragma warning disable IDE1006
 
@@ -29,23 +26,16 @@ namespace Providirector
 {
     [NetworkCompatibility(CompatibilityLevel.NoNeedForSync)]
     [BepInDependency("com.bepis.r2api", BepInDependency.DependencyFlags.HardDependency)]
-    [BepInDependency("com.rune580.riskofoptions", BepInDependency.DependencyFlags.SoftDependency)]
-    [BepInPlugin("com.DacityP.Providirector", "Providirector", "1.0.2")]
+    [BepInPlugin("com.DacityP.Providirector", "Providirector", "1.1.0")]
     public class Providirector : BaseUnityPlugin
     {
         #region Variables
-        private static ConfigEntry<bool> _modEnabled;
-        private static readonly bool _modEnabledfallback = true;
-        public static bool modEnabled => _modEnabled == null ? _modEnabledfallback : _modEnabled.Value;
-        
-        
-        private static ConfigEntry<bool> _debugEnabled;
-        private static readonly bool _debugEnabledFallback = false;
-        public static bool debugEnabled => _debugEnabled == null ? _debugEnabledFallback : _debugEnabled.Value;
+
+        public static bool debugEnabled;
 
         private static ConfigEntry<bool> _nearestNodeSnap;
         private static readonly bool _nearestNodeSnapFallback = true;
-        public static bool nearestNodeSnap => _debugEnabled == null ? _nearestNodeSnapFallback : _nearestNodeSnap.Value;
+        public static bool nearestNodeSnap => _nearestNodeSnap == null ? _nearestNodeSnapFallback : _nearestNodeSnap.Value;
 
         private static ConfigEntry<float> _vanillaCreditScale;
         private static readonly float _vanillaCreditScaleFallback = 0.85f;
@@ -111,6 +101,7 @@ namespace Providirector
         private bool currentlyAddingControl = false;
         private bool firstControllerAlreadySet = false;
         private bool enableFirstPerson = false;
+        public bool isControllingCharacter => currentMaster == defaultMaster;
 
         // Client mode director things
         private CameraRigController mainCamera => directorUser?.cameraRigController;
@@ -118,7 +109,7 @@ namespace Providirector
         private ProvidirectorHUD hud;
         private GameObject activeClientDirectorObject;
         private HealthBar targetHealthbar;
-        private GameObject spectateTarget;
+        public GameObject spectateTarget;
         private GameObject spectateTargetMaster => spectateTarget.GetComponent<CharacterBody>().masterObject;
         private CharacterMaster clientDefaultMaster;
         private float newCharacterMasterSpawnGrace = 0f;
@@ -141,7 +132,7 @@ namespace Providirector
                 // PLog("Director User set locally to {0}", _directorUser?.GetNetworkPlayerName().GetResolvedName());
             }
         }
-        private static bool directorIsLocal => runIsActive && directorUser == localUser.currentNetworkUser;
+        public static bool directorIsLocal => runIsActive && directorUser == localUser.currentNetworkUser;
         private static bool haveControlAuthority => NetworkServer.active;
 
         // Other locally defined constants
@@ -161,10 +152,15 @@ namespace Providirector
         public void Awake()
         {
             RoR2Application.isModded = true;
+            #if DEBUG
+            debugEnabled = true;
+            #else
+            debugEnabled = false;
+            #endif
             var path = System.IO.Path.GetDirectoryName(Info.Location);
             ProvidirectorResources.Load(path);
             harmonyInstance = new Harmony(Info.Metadata.GUID);
-            if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions")) SetupRiskOfOptions();
+            SetupConfig();
             RunHookSetup();
         }
 
@@ -180,12 +176,11 @@ namespace Providirector
 
         private void RunHookSetup()
         {
-            RoR2.Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
+            Run.onRunDestroyGlobal += Run_onRunDestroyGlobal;
             RoR2Application.onUpdate += RoR2Application_onUpdate;
             Stage.onStageStartGlobal += GlobalStageStart;
             On.RoR2.Run.Start += StartRun;
             On.RoR2.Run.OnServerSceneChanged += Run_OnServerSceneChanged;
-            On.RoR2.RunCameraManager.Update += RunCameraManager_Update;
             Run.onPlayerFirstCreatedServer += SetupDirectorUser;
             On.RoR2.Run.BeginGameOver += Run_BeginGameOver;
             On.RoR2.CombatDirector.Awake += CombatDirector_Awake;
@@ -212,22 +207,12 @@ namespace Providirector
             On.RoR2.Artifacts.DoppelgangerInvasionManager.CreateDoppelganger += DisableDoppelgangerControl;
             
 #if DEBUG
-            // Graciously stolen from DropInMultiplayer which is presumably taken from somewhere else
-            // Instructions:
-            // Step One: Assuming this line is in your codebase, start two instances of RoR2 (do this through the .exe directly)
-            // Step Two: Host a game with one instance of RoR2.
-            // Step Three: On the instance that isn't hosting, open up the console (ctrl + alt + tilde) and enter the command "connect localhost:7777"
-            // DO NOT MAKE A MISTAKE SPELLING THE COMMAND OR YOU WILL HAVE TO RESTART THE CLIENT INSTANCE!!
-            // Step Four: Test whatever you were going to test
-
-            On.RoR2.Networking.NetworkManagerSystem.OnClientConnect += (orig, a, b) => 
-            {
-                if (skipClientVerification) PLog("Skipped verification for local join");
-                else orig(a, b);
-            };
             On.RoR2.CameraRigController.EarlyUpdate += CameraRigController_EarlyUpdate;
 #endif
-            if (harmonyInstance != null) harmonyInstance.PatchAll(typeof(HarmonyPatches));
+            
+            harmonyInstance.PatchAll(typeof(HarmonyGetters));
+            harmonyInstance.PatchAll(typeof(HarmonyMethods));
+            PLog("All harmony patches have been created");
         }
 
         private void CameraRigController_EarlyUpdate(On.RoR2.CameraRigController.orig_EarlyUpdate orig, CameraRigController self)
@@ -280,32 +265,44 @@ Body - {6} <{7}>",
             }
         }
 
-        private void SetupRiskOfOptions()
+        private void SetupConfig()
         {
-            _modEnabled = Config.Bind<bool>("General", "Mod Enabled", true, "If checked, the mod is enabled and will be started in any multiplayer games where there are 2 or more players, and you are the host.");
             _nearestNodeSnap = Config.Bind<bool>("Director", "Snap to Terrain", true, "If checked, grounded enemies will snap to nearby terrain when spawned. Otherwise, they will spawn directly in front of the camera, like flying enemies.");
             _directorCredInit = Config.Bind<float>("Director", "Initial Credit", DirectorState.baseCreditGain, String.Format("The amount of credits gained by the player director per second. Default value is {0}.", DirectorState.baseCreditGain));
             _directorCredGain = Config.Bind<float>("Director", "Credit Gain Per Level", DirectorState.creditGainPerLevel, String.Format("The amount credit gain increases with level. Default value is {0}.", DirectorState.creditGainPerLevel));
             _directorWalletInit = Config.Bind<int>("Director", "Initial Capacity", (int)DirectorState.baseWalletSize, String.Format("The base maximum capacity of the player director wallet. Default value is {0}.", (int)DirectorState.baseWalletSize));
             _directorWalletGain = Config.Bind<int>("Director", "Capacity Gain Per Level", (int)DirectorState.walletGainPerLevel, String.Format("The amount wallet size increases with level. Default value is {0}.", (int)DirectorState.walletGainPerLevel));
             _vanillaCreditScale = Config.Bind<float>("Vanilla Config", "Vanilla Director Credit", 0.4f, "How strong the vanilla directors are. Default value is 40%.");
-            _directorSpawnCap = Config.Bind<int>("Director", "Spawn Cap", DirectorState.directorSelfSpawnCap, string.Format("The maximum amount of characters spawnable by the director at any given time. Default value is {0}", DirectorState.directorSelfSpawnCap));
-
-            ModSettingsManager.AddOption(new CheckBoxOption(_modEnabled));
-            ModSettingsManager.AddOption(new CheckBoxOption(_nearestNodeSnap));
-            ModSettingsManager.AddOption(new IntSliderOption(_directorSpawnCap, new IntSliderConfig { min = 20, max = 80 }));
-            ModSettingsManager.AddOption(new SliderOption(_directorCredInit, new SliderConfig { min = 0f, max = 5f, formatString = "{0:G2}" }));
-            ModSettingsManager.AddOption(new SliderOption(_directorCredGain, new SliderConfig { min = 0f, max = 3f, formatString = "{0:G2}" }));
-            ModSettingsManager.AddOption(new IntSliderOption(_directorWalletInit, new IntSliderConfig { min = 0, max = 100 }));
-            ModSettingsManager.AddOption(new IntSliderOption(_directorWalletGain, new IntSliderConfig { min = 0, max = 100 }));
-            ModSettingsManager.AddOption(new SliderOption(_vanillaCreditScale, new SliderConfig { min = 0f, max = 1f, formatString = "{0:P0}" }));
+            _directorSpawnCap = Config.Bind<int>("Director", "Spawn Cap", DirectorState.directorSelfSpawnCap,
+                string.Format(
+                    "The maximum amount of characters spawnable by the director at any given time. Default value is {0}",
+                    DirectorState.directorSelfSpawnCap));
+#if DEBUG
+            _skipClientVerification = Config.Bind("General", "Skip Client Verification", false,
+                "Cancels sending authorization when joining.");
+            #endif
+            if (Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions"))
+            {
+                ModSettingsManager.AddOption(new CheckBoxOption(_nearestNodeSnap));
+                ModSettingsManager.AddOption(new IntSliderOption(_directorSpawnCap,
+                    new IntSliderConfig { min = 20, max = 80 }));
+                ModSettingsManager.AddOption(new SliderOption(_directorCredInit,
+                    new SliderConfig { min = 0f, max = 5f, formatString = "{0:G2}" }));
+                ModSettingsManager.AddOption(new SliderOption(_directorCredGain,
+                    new SliderConfig { min = 0f, max = 3f, formatString = "{0:G2}" }));
+                ModSettingsManager.AddOption(new IntSliderOption(_directorWalletInit,
+                    new IntSliderConfig { min = 0, max = 100 }));
+                ModSettingsManager.AddOption(new IntSliderOption(_directorWalletGain,
+                    new IntSliderConfig { min = 0, max = 100 }));
+                ModSettingsManager.AddOption(new SliderOption(_vanillaCreditScale,
+                    new SliderConfig { min = 0f, max = 1f, formatString = "{0:P0}" }));
 
 #if DEBUG
-            _debugEnabled = Config.Bind("General", "Debug Mode", false, "Whether or not debug mode is enabled. This enables the mod to run in singleplayer games and enables more controls for Director mode (targeting non-player bodies).");
-            ModSettingsManager.AddOption(new CheckBoxOption(_debugEnabled));
-            _skipClientVerification = Config.Bind("General", "Skip Client Verification", false, "Cancels sending authorization when joining.");
-            ModSettingsManager.AddOption(new CheckBoxOption(_skipClientVerification));
+                _skipClientVerification = Config.Bind("General", "Skip Client Verification", false,
+                    "Cancels sending authorization when joining.");
+                ModSettingsManager.AddOption(new CheckBoxOption(_skipClientVerification));
 #endif
+            }
 
         }
         #endregion
@@ -377,27 +374,21 @@ Body - {6} <{7}>",
 
         private void StartRun(On.RoR2.Run.orig_Start orig, Run self)
         {
-            runIsActive = modEnabled && (NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled);
+            runIsActive = NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled;
             orig(self);
             if (runIsActive)
             {
                 runIsActive = true;
-                if (_modEnabled != null)
-                {
-                    DirectorState.baseCreditGain = _directorCredInit.Value;
-                    DirectorState.creditGainPerLevel = _directorCredGain.Value;
-                    DirectorState.baseWalletSize = _directorWalletInit.Value;
-                    DirectorState.walletGainPerLevel = _directorWalletGain.Value;
-                    DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
-                }
+                DirectorState.baseCreditGain = _directorCredInit.Value;
+                DirectorState.creditGainPerLevel = _directorCredGain.Value;
+                DirectorState.baseWalletSize = _directorWalletInit.Value;
+                DirectorState.walletGainPerLevel = _directorWalletGain.Value;
+                DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
                 PLog(@"Director User is currently set to {0}", directorUser.GetNetworkPlayerName().GetResolvedName());
                 foreach (NetworkUser nu in NetworkUser.readOnlyInstancesList)
                 {
-                    SendNetMessageSingle(nu.connectionToClient, MessageType.GameStart, 1, new GameStart()
-                    {
-                        gameobject = directorUser.gameObject
-                    });
                     if (nu == directorUser) SendNetMessageSingle(nu.connectionToClient, MessageType.DirectorSync, 1, new DirectorSync(true));
+                    else SendNetMessageSingle(nu.connectionToClient, MessageType.GameStart, 1, new GameStart());
                 }
                 PLog("Providirector has been set up for this run!");
             }
@@ -405,17 +396,17 @@ Body - {6} <{7}>",
 
         private void PreventDeathCallsIfDirector(On.RoR2.GlobalEventManager.orig_OnPlayerCharacterDeath orig, GlobalEventManager self, DamageReport damageReport, NetworkUser victimNetworkUser)
         {
-            if (!runIsActive || !modEnabled || victimNetworkUser == directorUser) return;
+            if (!runIsActive || victimNetworkUser == directorUser) return;
             orig(self, damageReport, victimNetworkUser); // Stop death messages and other hooked things like Refightilization
         }
 
         private void SetupDirectorUser(Run run, PlayerCharacterMasterController generatedPCMC)
         {
             NetworkUser user = generatedPCMC.networkUser;
-            if (!(modEnabled && (NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled))) return;
+            if (!(NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled)) return;
             if (!directorUser) directorUser = localUser.currentNetworkUser;
             if (!user.master) { PLog(LogLevel.Warning, "No master found on the spawned player!"); return; }
-            if (!modEnabled || user != directorUser || !haveControlAuthority) return;
+            if (user != directorUser || !haveControlAuthority) return;
             // At this point we know that the user being added is the player who will be the director, and that we have the authority to manage it.
             directorUser = user;
             defaultMaster = user.master;
@@ -636,9 +627,15 @@ Body - {6} <{7}>",
         #endregion
 
         #region General Client-side Methods
+
         private void DirectorControlChainMod(On.RoR2.LocalUser.orig_RebuildControlChain orig, LocalUser self)
         {
-            if (!(runIsActive && directorIsLocal)) { orig(self); return; }
+            if (!(runIsActive && directorIsLocal))
+            {
+                orig(self);
+                return;
+            }
+
             self.cachedMasterObject = null;
             self.cachedMasterObject = self.currentNetworkUser?.masterObject;
             self.cachedMaster = self.cachedMasterObject?.GetComponent<CharacterMaster>();
@@ -646,16 +643,6 @@ Body - {6} <{7}>",
             self.cachedStatsComponent = self.cachedMaster?.playerStatsComponent;
             self.cachedBody = self.cachedMaster?.GetBody();
             self.cachedBodyObject = self.cachedBody?.gameObject;
-        }
-        
-        private void RunCameraManager_Update(On.RoR2.RunCameraManager.orig_Update orig, RunCameraManager self)
-        {
-            orig(self);
-            if (!(runIsActive && directorIsLocal && !self.isLobby)) return;
-            CameraRigController localRig = localUser.cameraRigController;
-            if (!localRig) return;
-            localRig.nextTarget = spectateTarget;
-            localRig.cameraMode = CameraModeDirector.director;
         }
 
         private void SetupSceneChange(On.RoR2.Networking.NetworkManagerSystem.orig_OnClientSceneChanged orig, NetworkManagerSystem self, NetworkConnection conn)
@@ -670,14 +657,11 @@ Body - {6} <{7}>",
             DirectorState.snapToNearestNode = nearestNodeSnap;
             DirectorState.eliteTiers = CombatDirector.eliteTiers;
 
-            if (_modEnabled != null)
-            {
-                DirectorState.baseCreditGain = _directorCredInit.Value;
-                DirectorState.creditGainPerLevel = _directorCredGain.Value;
-                DirectorState.baseWalletSize = _directorWalletInit.Value;
-                DirectorState.walletGainPerLevel = _directorWalletGain.Value;
-                DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
-            }
+            DirectorState.baseCreditGain = _directorCredInit.Value;
+            DirectorState.creditGainPerLevel = _directorCredGain.Value;
+            DirectorState.baseWalletSize = _directorWalletInit.Value;
+            DirectorState.walletGainPerLevel = _directorWalletGain.Value;
+            DirectorState.directorSelfSpawnCap = _directorSpawnCap.Value;
 
             if (currentDirectorConfig != null)
             {
@@ -771,7 +755,7 @@ Body - {6} <{7}>",
                 if (!directorIsLocal) return;
                 ToggleHUD(true);
                 SetBaseUIVisible(false);
-                SetFirstPersonClient(false);
+                StartCoroutine(SetFirstPersonClient(false));
                 PLog("HUD setup complete");
                 if (NetworkManager.networkSceneName.Equals("voidraid"))
                     StartCoroutine(MoveCollisionAttempt(voidlingTriggerZone, NetworkManager.networkSceneName));
@@ -1178,14 +1162,14 @@ Body - {6} <{7}>",
         public void HandleGameStartClient(NetworkMessage msg, MessageSubIdentifier _)
         {
             GameStart gs = msg.ReadMessage<GameStart>();
-            runIsActive = true;
-            directorUser = gs.user;
+            runIsActive = false;
+            directorUser = null;
         }
 
         public void HandleHandshakeClient(NetworkMessage msg, MessageSubIdentifier sid)
         {
-            if (!NetworkServer.active) directorUser = sid.booleanValue && modEnabled ? localUser.currentNetworkUser : null;
-            if (sid.booleanValue) SendSingleGeneric(msg.conn, MessageType.HandshakeResponse, modEnabled);
+            if (!NetworkServer.active) directorUser = sid.booleanValue ? localUser.currentNetworkUser : null;
+            if (sid.booleanValue) SendSingleGeneric(msg.conn, MessageType.HandshakeResponse, true);
         }
 
         public void HandleHandshakeServer(NetworkMessage msg, MessageSubIdentifier sid)

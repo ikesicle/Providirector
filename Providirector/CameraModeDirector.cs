@@ -1,5 +1,4 @@
 ﻿using Rewired;
-using System;
 using UnityEngine;
 using HG.BlendableTypes;
 using RoR2;
@@ -27,53 +26,33 @@ public class CameraModeDirector : CameraModePlayerBasic
         float fov = context.cameraInfo.baseFov;
         Quaternion quaternion = context.cameraInfo.previousCameraState.rotation;
         Vector3 position = context.cameraInfo.previousCameraState.position;
-        GameObject firstPersonTarget = null;
         float num = cameraRigController.baseFov;
-        if (context.targetInfo.isSprinting)
-        {
-            num *= 1.3f;
-        }
         instanceData.neutralFov = Mathf.SmoothDamp(instanceData.neutralFov, num, ref instanceData.neutralFovVelocity, 0.2f, float.PositiveInfinity, Time.deltaTime);
         CharacterCameraParamsData dest = CharacterCameraParamsData.basic;
         dest.fov = instanceData.neutralFov;
         dest.idealLocalCameraPos.value = idealLocalCameraPosOverride.value;
-        Vector2 vector = Vector2.zero;
         if ((bool)targetParams)
         {
-            CharacterCameraParamsData.Blend(in targetParams.currentCameraParamsData, ref dest, 1f);
-            fov = dest.fov.value;
-            vector = targetParams.recoil;
-        }
-        if (dest.isFirstPerson.value)
-        {
-            firstPersonTarget = context.targetInfo.target;
+            BlendableFloat.Blend(in targetParams.currentCameraParamsData.pivotVerticalOffset, ref dest.pivotVerticalOffset, 1f);
         }
         instanceData.minPitch = dest.minPitch.value;
         instanceData.maxPitch = dest.maxPitch.value;
         float pitch = instanceData.pitchYaw.pitch;
         float yaw = instanceData.pitchYaw.yaw;
-        pitch += vector.y;
-        yaw += vector.x;
+        //Providirector.PLog("{0} - {1}", pitch, yaw);
         pitch = Mathf.Clamp(pitch, instanceData.minPitch, instanceData.maxPitch);
         yaw = Mathf.Repeat(yaw, 360f);
         Vector3 targetPivotPosition = CalculateTargetPivotPosition(in context);
         if ((bool)context.targetInfo.target)
         {
             quaternion = Quaternion.Euler(pitch, yaw, 0f);
-            Vector3 direction = targetPivotPosition + quaternion * dest.idealLocalCameraPos.value - targetPivotPosition;
+            Vector3 direction = quaternion * dest.idealLocalCameraPos.value;
             float magnitude = direction.magnitude;
             // We removed the parabolic camera controls - The camera now moves uniformly around the player character.
 
             float num3 = cameraRigController.Raycast(new Ray(targetPivotPosition, direction), magnitude, dest.wallCushion.value - 0.01f);
-            if (instanceData.currentCameraDistance >= num3)
-            {
-                instanceData.currentCameraDistance = num3;
-                instanceData.cameraDistanceVelocity = 0f;
-            }
-            else
-            {
-                instanceData.currentCameraDistance = Mathf.SmoothDamp(instanceData.currentCameraDistance, num3, ref instanceData.cameraDistanceVelocity, 0.5f);
-            }
+            instanceData.currentCameraDistance = num3;
+            instanceData.cameraDistanceVelocity = 0f;
             position = targetPivotPosition + direction.normalized * instanceData.currentCameraDistance;
         }
         result = new UpdateResult();
@@ -81,7 +60,7 @@ public class CameraModeDirector : CameraModePlayerBasic
         result.cameraState.rotation = quaternion;
         result.cameraState.fov = fov;
         result.showSprintParticles = context.targetInfo.isSprinting;
-        result.firstPersonTarget = firstPersonTarget;
+        result.firstPersonTarget = null;
         UpdateCrosshair(rawInstanceData, in context, in result.cameraState, in targetPivotPosition, out result.crosshairWorldPosition);
     }
 
@@ -90,7 +69,30 @@ public class CameraModeDirector : CameraModePlayerBasic
         ref readonly ViewerInfo viewerInfo = ref context.viewerInfo;
         float scrollwheel = Input.mouseScrollDelta.y;
         cameraDistance = Mathf.Clamp(cameraDistance + scrollwheel, -100f, -2f);
-        base.CollectLookInputInternal(rawInstanceData, context, out output);
+        
+        Player inputPlayer = viewerInfo.inputPlayer;
+        UserProfile userProfile = viewerInfo.userProfile;
+        InstanceData instanceData = (InstanceData)rawInstanceData;
+		output.lookInput = Vector3.zero;
+        Vector2 vector = new Vector2(inputPlayer.GetAxisRaw(2), inputPlayer.GetAxisRaw(3));
+        Vector2 aimStickVector = new Vector2(inputPlayer.GetAxisRaw(16), inputPlayer.GetAxisRaw(17));
+        ConditionalNegate(ref vector.x, userProfile.mouseLookInvertX);
+        ConditionalNegate(ref vector.y, userProfile.mouseLookInvertY);
+        ConditionalNegate(ref aimStickVector.x, userProfile.stickLookInvertX);
+        ConditionalNegate(ref aimStickVector.y, userProfile.stickLookInvertY);
+        PerformStickPostProcessing(instanceData, in context, ref aimStickVector);
+        float mouseLookSensitivity = userProfile.mouseLookSensitivity;
+        float num = userProfile.stickLookSensitivity * CameraRigController.aimStickGlobalScale.value * 45f;
+        Vector2 vector2 = new Vector2(userProfile.mouseLookScaleX, userProfile.mouseLookScaleY);
+        Vector2 vector3 = new Vector2(userProfile.stickLookScaleX, userProfile.stickLookScaleY);
+        vector *= vector2 * mouseLookSensitivity;
+        aimStickVector *= vector3 * num;
+        aimStickVector *= Time.deltaTime;
+        output.lookInput = vector + aimStickVector;
+        static void ConditionalNegate(ref float value, bool condition)
+		{
+			value = (condition ? (0f - value) : value);
+		}
     }
 
     public override void ApplyLookInputInternal(object rawInstanceData, in CameraModeContext context, in ApplyLookInputArgs input)
@@ -101,7 +103,6 @@ public class CameraModeDirector : CameraModePlayerBasic
         float maxPitch = instanceData.maxPitch;
         instanceData.pitchYaw.pitch = Mathf.Clamp(instanceData.pitchYaw.pitch - input.lookInput.y, minPitch, maxPitch);
         instanceData.pitchYaw.yaw += input.lookInput.x;
-        if ((bool)targetInfo.networkedViewAngles && targetInfo.networkedViewAngles.hasEffectiveAuthority && targetInfo.networkUser)
-            targetInfo.networkedViewAngles.viewAngles = instanceData.pitchYaw;
+        //Providirector.PLog("{0} - {1} : {2} - {3}", input.lookInput.x, input.lookInput.y, instanceData.pitchYaw.pitch, instanceData.pitchYaw.yaw);
     }
 }
