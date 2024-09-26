@@ -101,7 +101,7 @@ namespace Providirector
         private bool currentlyAddingControl = false;
         private bool firstControllerAlreadySet = false;
         private bool enableFirstPerson = false;
-        public bool isControllingCharacter => currentMaster == defaultMaster;
+        public bool isControllingCharacter = false;
 
         // Client mode director things
         private CameraRigController mainCamera => directorUser?.cameraRigController;
@@ -208,8 +208,21 @@ namespace Providirector
             
 #if DEBUG
             On.RoR2.CameraRigController.EarlyUpdate += CameraRigController_EarlyUpdate;
+            // Graciously stolen from DropInMultiplayer which is presumably taken from somewhere else
+            // Instructions:
+            // Step One: Assuming this line is in your codebase, start two instances of RoR2 (do this through the .exe directly)
+            // Step Two: Host a game with one instance of RoR2.
+            // Step Three: On the instance that isn't hosting, open up the console (ctrl + alt + tilde) and enter the command "connect localhost:7777"
+            // DO NOT MAKE A MISTAKE SPELLING THE COMMAND OR YOU WILL HAVE TO RESTART THE CLIENT INSTANCE!!
+            // Step Four: Test whatever you were going to test
+
+            On.RoR2.Networking.NetworkManagerSystem.OnClientConnect += (orig, a, b) =>
+            {
+                if (skipClientVerification) PLog("Skipped verification for local join");
+                else orig(a, b);
+            };
 #endif
-            
+
             harmonyInstance.PatchAll(typeof(HarmonyGetters));
             harmonyInstance.PatchAll(typeof(HarmonyMethods));
             PLog("All harmony patches have been created");
@@ -374,6 +387,11 @@ Body - {6} <{7}>",
 
         private void StartRun(On.RoR2.Run.orig_Start orig, Run self)
         {
+            if (!NetworkServer.active)
+            {
+                orig(self);
+                return;
+            }
             runIsActive = NetworkUser.readOnlyInstancesList.Count > 1 || debugEnabled;
             orig(self);
             if (runIsActive)
@@ -449,6 +467,9 @@ Body - {6} <{7}>",
                 currentlyAddingControl = false;
                 focusTargetPersistent = null;
                 if (currentMaster != defaultMaster) DisengagePlayerControl();
+            } else
+            {
+                PLog("Run is not active. Skipping scene setup.");
             }
         }
 
@@ -865,7 +886,7 @@ Body - {6} <{7}>",
                 PLog("Run is not active, or the director is not local. Cancelling the move collision attempt.");
                 yield break;
             }
-            while (!(clientDefaultMaster && NetworkManager.networkSceneName.Equals(intendedSceneName) && clientDefaultMaster.GetBodyObject() && Run.instance.livingPlayerCount >= NetworkUser.readOnlyInstancesList.Count))
+            while (!(clientDefaultMaster && NetworkManager.networkSceneName.Equals(intendedSceneName) && clientDefaultMaster.GetBodyObject() && Run.instance.livingPlayerCount >= NetworkUser.readOnlyInstancesList.Count && clientDefaultMaster.hasEffectiveAuthority))
             {
                 PLog("Cannot move yet. Scene {0}, CDM {1}, Players {2}/{3}", NetworkManager.networkSceneName, clientDefaultMaster == null ? "null" : clientDefaultMaster, Run.instance.livingPlayerCount, NetworkUser.readOnlyInstancesList.Count);
                 yield return new WaitForSeconds(1f);
@@ -929,7 +950,7 @@ Body - {6} <{7}>",
 
         private void RoR2Application_onUpdate()
         {
-            if (!runIsActive) return;
+            if (!runIsActive) return; // TODO: Disable these updates when the run is active
             InputManager.SwapPage.PushState(Input.GetKey(KeyCode.Space));
             InputManager.Slot1.PushState(Input.GetKey(KeyCode.Alpha1));
             InputManager.Slot2.PushState(Input.GetKey(KeyCode.Alpha2));
@@ -1052,7 +1073,7 @@ Body - {6} <{7}>",
         public void HandleCommsClient(NetworkMessage msg)
         {
             MessageSubIdentifier header = ReadHeader(msg.reader);
-            // PLog("Client Received Message {0}: {1}", header.type, header.booleanValue);
+            PLog("Client Received Message {0}: {1}", header.type, header.booleanValue);
             switch (header.type)
             {
                 case MessageType.Handshake:
@@ -1068,30 +1089,33 @@ Body - {6} <{7}>",
                     HandleGameStartClient(msg, header);
                     break;
                 case MessageType.ModeUpdate:
-                    // PLog("Mode update received: {0}", header.booleanValue);
-                    ToggleHUD(header.booleanValue);
-                    SetBaseUIVisible(!header.booleanValue);
+                    PLog("Mode update received: {0}", header.booleanValue);
+                    isControllingCharacter = header.booleanValue;
+                    ToggleHUD(!isControllingCharacter);
+                    SetBaseUIVisible(!isControllingCharacter);
                     break;
                 case MessageType.FPUpdate:
-                    // PLog("Starting FPUpdate Coroutine");
+                    PLog("Starting FPUpdate Coroutine");
                     StartCoroutine(SetFirstPersonClient(header.booleanValue, 5f));
                     break;
                 case MessageType.DirectorSync:
-                    // PLog("Syncing director config for client");
+                    PLog("Syncing director config for client");
                     currentDirectorConfig = msg.reader.ReadMessage<DirectorSync>();
+                    runIsActive = true;
+                    directorUser = localUser.currentNetworkUser;
                     break;
                 case MessageType.MovePosition:
                     var data = msg.reader.ReadMessage<MovePosition>();
                     if (directorIsLocal) StartCoroutine(MoveCollisionAttempt(data.position, data.intendedSceneName));
                     break;
                 case MessageType.CardSync:
-                    // PLog("Syncing Void Fields");
+                    PLog("Syncing director cards");
                     CardSync sync = msg.reader.ReadMessage<CardSync>();
                     UpdateCards(sync);
                     break;
                 case MessageType.NotifyNewMaster:
                     CharacterMaster newm = msg.reader.ReadMessage<NotifyNewMaster>().target;
-                    // PLog("Client hooking into new master {0}", newm ? newm : "null");
+                    PLog("Client hooking into new master {0}", newm ? newm : "null");
                     clientDefaultMaster.playerCharacterMasterController.master = newm;
                     newm.playerCharacterMasterController = clientDefaultMaster.playerCharacterMasterController;
                     newm.playerStatsComponent = clientDefaultMaster.playerStatsComponent;
@@ -1100,7 +1124,7 @@ Body - {6} <{7}>",
                     break;
                     
                 default:
-                    // PLog("Client: Invalid Message Received (Msg Subtype {0})", (int)header.type);
+                    PLog("Client: Invalid Message Received (Msg Subtype {0})", (int)header.type);
                     break;
             }
         }
@@ -1108,14 +1132,14 @@ Body - {6} <{7}>",
         public void HandleCommsServer(NetworkMessage msg)
         {
             MessageSubIdentifier header = ReadHeader(msg.reader);
-            // PLog("Server Received Message {0}: {1}", header.type, header.booleanValue);
+            PLog("Server Received Message {0}: {1}", header.type, header.booleanValue);
             switch (header.type)
             {
                 case MessageType.HandshakeResponse:
                     HandleHandshakeServer(msg, header);
                     break;
                 case MessageType.DirectorSync:
-                    // PLog("Syncing director config for server");
+                    PLog("Syncing director config for server");
                     currentDirectorConfig = msg.reader.ReadMessage<DirectorSync>();
                     break;
                 case MessageType.Burst:
@@ -1130,7 +1154,7 @@ Body - {6} <{7}>",
                 case MessageType.RequestBodyResync:
                     if (currentMaster)
                     {
-                        // PLog("Current master is set, sending body resync");
+                        PLog("Current master is set, sending body resync");
                         if (currentMaster.GetBodyObject()) StartCoroutine(SetBodyAuthorityPersistent(currentMaster.GetBodyObject()));
                         currentMaster.onBodyStart += OnBodyFound;
                     }
@@ -1149,7 +1173,7 @@ Body - {6} <{7}>",
                     }
                     break;
                 default:
-                    // PLog("Server: Invalid Message Received (Msg Subtype {0})", (int)header.type);
+                    PLog("Server: Invalid Message Received (Msg Subtype {0})", (int)header.type);
                     break;
             }
             void OnBodyFound(CharacterBody c)
@@ -1162,6 +1186,7 @@ Body - {6} <{7}>",
         public void HandleGameStartClient(NetworkMessage msg, MessageSubIdentifier _)
         {
             GameStart gs = msg.ReadMessage<GameStart>();
+            if (NetworkServer.active) return;
             runIsActive = false;
             directorUser = null;
         }
@@ -1258,7 +1283,7 @@ Body - {6} <{7}>",
 
         private void UpdateCards(CardSync sync)
         {
-            if (!(runIsActive && clientModeDirector)) return;
+            if (!runIsActive) return;
             ClientState.spawnableCharacters.Clear();
             foreach (SpawnCardDisplayData card in sync.cardDisplayDatas) ClientState.spawnableCharacters.Add(card);
         }
@@ -1511,7 +1536,7 @@ Body - {6} <{7}>",
 
         private void MoveToEscapeZone(On.RoR2.HoldoutZoneController.orig_Start orig, HoldoutZoneController self)
         {
-            // PLog("Holdout zone activated! Token: {0}", self.inBoundsObjectiveToken);
+            PLog("Holdout zone activated! Token: {0}", self.inBoundsObjectiveToken);
             orig(self);
             if (self.inBoundsObjectiveToken.Equals("OBJECTIVE_MOON_CHARGE_DROPSHIP"))
             {
